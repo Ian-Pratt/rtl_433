@@ -468,7 +468,7 @@ Use format strings of:
 - `[/token]` expand to token with leading slash or nothing
 - `[/token:default]` expand to token or default with leading slash
 
-Tokens are `type`, `model`, `subtype`, `channel`, `id`, and `protocol` for now.
+Tokens are `type`, `model`, `subtype`, `channel`, `id`, `ids`, `Command`, and `protocol` for now.
 
 Note that for `protocol` to be available you first need to add it to the meta-data with `-M protocol`.
 
