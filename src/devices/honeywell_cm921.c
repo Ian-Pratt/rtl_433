@@ -375,13 +375,23 @@ static int honeywell_cm921_decode(r_device *decoder, bitbuffer_t *bitbuffer)
         break;
     }
     case 0x2309: {
-        if (msg.payload_length != 3) {
+        if (msg.payload_length == 0 || msg.payload_length % 3 != 0) {
             data = data_int(data, "unknown", "", "%04x", msg.command);
             break;
         }
-        data = data_int(data, "zone", "", NULL, msg.payload[0]);
-        // Observation: CM921 reports a very high setpoint during binding (0x7eff); packet: 143255c1230903017efff7
-        data = data_dbl(data, "setpoint", "", NULL, ((msg.payload[1] << 8) | msg.payload[2]) * (1 / 100.0F));
+        if (msg.payload_length == 3) {
+            data = data_int(data, "zone", "", NULL, msg.payload[0]);
+            // Observation: CM921 reports a very high setpoint during binding (0x7eff); packet: 143255c1230903017efff7
+            data = data_dbl(data, "setpoint", "", NULL, ((msg.payload[1] << 8) | msg.payload[2]) * (1 / 100.0F));
+        }
+        else {
+            for (size_t i = 0; i < msg.payload_length; i += 3) {
+                char name[32];
+                snprintf(name, sizeof(name), "setpoint (zone %u)", msg.payload[i]);
+                int16_t temp = msg.payload[i + 1] << 8 | msg.payload[i + 2];
+                data = data_dbl(data, name, "", NULL, temp / 100.0);
+            }
+        }
         break;
     }
     case 0x1100: {
@@ -488,6 +498,22 @@ static char const *const output_fields[] = {
         "flame_status",
         "zone",
         "setpoint",
+        "setpoint (zone 0)",
+        "setpoint (zone 1)",
+        "setpoint (zone 2)",
+        "setpoint (zone 3)",
+        "setpoint (zone 4)",
+        "setpoint (zone 5)",
+        "setpoint (zone 6)",
+        "setpoint (zone 7)",
+        "setpoint (zone 8)",
+        "setpoint (zone 9)",
+        "setpoint (zone 10)",
+        "setpoint (zone 11)",
+        "setpoint (zone 12)",
+        "setpoint (zone 13)",
+        "setpoint (zone 14)",
+        "setpoint (zone 15)",
         "cycle_rate",
         "minimum_on_time",
         "minimum_off_time",
