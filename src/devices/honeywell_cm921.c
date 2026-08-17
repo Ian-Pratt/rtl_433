@@ -459,6 +459,15 @@ static int honeywell_cm921_decode(r_device *decoder, bitbuffer_t *bitbuffer)
         data = data_int(data, "aux_input", "", NULL, msg.payload[2]);
         break;
     }
+    case 0x1060: {
+        // Battery status: payload[2] is 1 for OK and 0 for low.
+        if (msg.payload_length != 3) {
+            data = data_int(data, "unknown", "", "%04x", msg.command);
+            break;
+        }
+        data = data_int(data, "battery_ok", "", NULL, msg.payload[2]);
+        break;
+    }
     default: /* Unknown command */
         data = data_int(data, "unknown", "", "%04x", msg.command);
         break;
@@ -532,6 +541,7 @@ static char const *const output_fields[] = {
         "ticker",
         "heat_demand",
         "aux_input",
+        "battery_ok",
         "boiler_modulation_level",
         "datetime",
         "domain_id",
