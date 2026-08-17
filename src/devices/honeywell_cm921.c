@@ -450,6 +450,11 @@ static int honeywell_cm921_decode(r_device *decoder, bitbuffer_t *bitbuffer)
         data = data_int(data, "heat_demand", "", NULL, msg.payload[1]);
         break;
     }
+    case 0x1f09: // System synchronization countdown
+    case 0x2389: // Purpose unknown, but observed with a three-byte payload
+        if (msg.payload_length != 3)
+            data = data_int(data, "unknown", "", "%04x", msg.command);
+        break;
     case 0x0002: {
         // External sensor input state reported by a thermostat.
         if (msg.payload_length != 4) {
