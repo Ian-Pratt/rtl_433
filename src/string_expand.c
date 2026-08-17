@@ -34,30 +34,18 @@ static char *append_topic(char *topic, data_t *data, expand_string_sanitizer san
     return topic;
 }
 
+static data_t *find_data_token(data_t *data, char const *start, char const *end)
+{
+    size_t len = end - start;
+    for (data_t *d = data; d; d = d->next) {
+        if (strlen(d->key) == len && !strncmp(d->key, start, len))
+            return d;
+    }
+    return NULL;
+}
+
 char *expand_topic_string(char *topic, char const *format, data_t *data, char const *hostname, expand_string_sanitizer sanitizer)
 {
-    // collect well-known top level keys
-    data_t *data_type    = NULL;
-    data_t *data_model   = NULL;
-    data_t *data_subtype = NULL;
-    data_t *data_channel = NULL;
-    data_t *data_id      = NULL;
-    data_t *data_protocol = NULL;
-    for (data_t *d = data; d; d = d->next) {
-        if (!strcmp(d->key, "type"))
-            data_type = d;
-        else if (!strcmp(d->key, "model"))
-            data_model = d;
-        else if (!strcmp(d->key, "subtype"))
-            data_subtype = d;
-        else if (!strcmp(d->key, "channel"))
-            data_channel = d;
-        else if (!strcmp(d->key, "id"))
-            data_id = d;
-        else if (!strcmp(d->key, "protocol")) // NOTE: needs "-M protocol"
-            data_protocol = d;
-    }
-
     // consume entire format string
     while (format && *format) {
         data_t *data_token  = NULL;
@@ -75,7 +63,7 @@ char *expand_topic_string(char *topic, char const *format, data_t *data, char co
             break;
         ++format;
         // read slash
-        if (!leading_slash && (*format < 'a' || *format > 'z')) {
+        if (*format == '/') {
             leading_slash = *format;
             format++;
         }
@@ -97,24 +85,10 @@ char *expand_topic_string(char *topic, char const *format, data_t *data, char co
         ++format;
 
         // resolve token
-        if (!strncmp(t_start, "hostname", t_end - t_start))
+        if (t_end - t_start == 8 && !strncmp(t_start, "hostname", 8))
             string_token = hostname;
-        else if (!strncmp(t_start, "type", t_end - t_start))
-            data_token = data_type;
-        else if (!strncmp(t_start, "model", t_end - t_start))
-            data_token = data_model;
-        else if (!strncmp(t_start, "subtype", t_end - t_start))
-            data_token = data_subtype;
-        else if (!strncmp(t_start, "channel", t_end - t_start))
-            data_token = data_channel;
-        else if (!strncmp(t_start, "id", t_end - t_start))
-            data_token = data_id;
-        else if (!strncmp(t_start, "protocol", t_end - t_start))
-            data_token = data_protocol;
-        else {
-            print_logf(LOG_FATAL, __func__, "unknown token \"%.*s\"", (int)(t_end - t_start), t_start);
-            exit(1);
-        }
+        else
+            data_token = find_data_token(data, t_start, t_end);
 
         // append token or default
         if (!data_token && !string_token && !d_start)
