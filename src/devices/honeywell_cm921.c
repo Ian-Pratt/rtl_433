@@ -52,6 +52,7 @@ typedef struct {
     uint8_t unparsed_length;
     uint8_t unparsed[256];
     uint8_t crc;
+    uint8_t csum_residue;
 } message_t;
 
 /*
@@ -120,6 +121,7 @@ static int parse_msg(bitbuffer_t *bmsg, int row, message_t *msg)
     int bsum = add_bytes(bb, num_bytes) & 0xff;
     int checksum_ok = bsum == 0;
     msg->crc = bitrow_get_byte(bb, bmsg->bits_per_row[row] - 8);
+    msg->csum_residue = bsum;
 
     if (!checksum_ok) {
         return DECODE_FAIL_MIC;
@@ -444,6 +446,7 @@ static int honeywell_cm921_decode(r_device *decoder, bitbuffer_t *bitbuffer)
     uint8_t cmd[2] = {msg.command >> 8, msg.command & 0x00FF};
     data = data_hex(data, "Command", "", NULL, cmd, 2, tstr);
     data = data_hex(data, "Payload", "", NULL, msg.payload, msg.payload_length, tstr);
+    data = data_hex(data, "csum_residue", "", NULL, &msg.csum_residue, 1, tstr);
 
 #ifdef _DEBUG
     data = data_hex(data, "Packet", "", NULL, packet.bb[row], packet.bits_per_row[row] / 8, tstr);
@@ -469,6 +472,7 @@ static char const *const output_fields[] = {
         "ids",
         "Command",
         "Payload",
+        "csum_residue",
 #ifdef _DEBUG
         "Packet",
         "Header",
