@@ -440,13 +440,14 @@ static int honeywell_cm921_decode(r_device *decoder, bitbuffer_t *bitbuffer)
         break;
     }
 
-#ifdef _DEBUG
     char tstr[256];
-    data = data_hex(data, "Packet", "", NULL, packet.bb[row], packet.bits_per_row[row] / 8, tstr);
-    data = data_hex(data, "Header", "", NULL, &msg.header, 1, tstr);
     uint8_t cmd[2] = {msg.command >> 8, msg.command & 0x00FF};
     data = data_hex(data, "Command", "", NULL, cmd, 2, tstr);
     data = data_hex(data, "Payload", "", NULL, msg.payload, msg.payload_length, tstr);
+
+#ifdef _DEBUG
+    data = data_hex(data, "Packet", "", NULL, packet.bb[row], packet.bits_per_row[row] / 8, tstr);
+    data = data_hex(data, "Header", "", NULL, &msg.header, 1, tstr);
     data = data_hex(data, "Unparsed", "", NULL, msg.unparsed, msg.unparsed_length, tstr);
     data = data_hex(data, "CRC", "", NULL, &msg.crc, 1, tstr);
     data = data_int(data, "# man errors", "", NULL, man_errors);
@@ -466,11 +467,11 @@ static int honeywell_cm921_decode(r_device *decoder, bitbuffer_t *bitbuffer)
 static char const *const output_fields[] = {
         "model",
         "ids",
+        "Command",
+        "Payload",
 #ifdef _DEBUG
         "Packet",
         "Header",
-        "Command",
-        "Payload",
         "Unparsed",
         "CRC",
         "# man errors",
