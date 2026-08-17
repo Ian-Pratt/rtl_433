@@ -468,6 +468,26 @@ static int honeywell_cm921_decode(r_device *decoder, bitbuffer_t *bitbuffer)
         data = data_int(data, "battery_ok", "", NULL, msg.payload[2]);
         break;
     }
+    case 0x000a: {
+        // Zone configuration: flags followed by low and high temperature limits.
+        if (msg.payload_length == 0 || msg.payload_length % 6 != 0) {
+            data = data_int(data, "unknown", "", "%04x", msg.command);
+            break;
+        }
+        for (size_t i = 0; i < msg.payload_length; i += 6) {
+            char name[32];
+            unsigned zone = msg.payload[i];
+            snprintf(name, sizeof(name), "flags (zone %u)", zone);
+            data = data_int(data, name, "", "%02x", msg.payload[i + 1]);
+            snprintf(name, sizeof(name), "temp_low (zone %u)", zone);
+            int16_t temp = msg.payload[i + 2] << 8 | msg.payload[i + 3];
+            data = data_dbl(data, name, "", NULL, temp / 100.0);
+            snprintf(name, sizeof(name), "temp_high (zone %u)", zone);
+            temp = msg.payload[i + 4] << 8 | msg.payload[i + 5];
+            data = data_dbl(data, name, "", NULL, temp / 100.0);
+        }
+        break;
+    }
     default: /* Unknown command */
         data = data_int(data, "unknown", "", "%04x", msg.command);
         break;
@@ -542,6 +562,54 @@ static char const *const output_fields[] = {
         "heat_demand",
         "aux_input",
         "battery_ok",
+        "flags (zone 0)",
+        "flags (zone 1)",
+        "flags (zone 2)",
+        "flags (zone 3)",
+        "flags (zone 4)",
+        "flags (zone 5)",
+        "flags (zone 6)",
+        "flags (zone 7)",
+        "flags (zone 8)",
+        "flags (zone 9)",
+        "flags (zone 10)",
+        "flags (zone 11)",
+        "flags (zone 12)",
+        "flags (zone 13)",
+        "flags (zone 14)",
+        "flags (zone 15)",
+        "temp_low (zone 0)",
+        "temp_low (zone 1)",
+        "temp_low (zone 2)",
+        "temp_low (zone 3)",
+        "temp_low (zone 4)",
+        "temp_low (zone 5)",
+        "temp_low (zone 6)",
+        "temp_low (zone 7)",
+        "temp_low (zone 8)",
+        "temp_low (zone 9)",
+        "temp_low (zone 10)",
+        "temp_low (zone 11)",
+        "temp_low (zone 12)",
+        "temp_low (zone 13)",
+        "temp_low (zone 14)",
+        "temp_low (zone 15)",
+        "temp_high (zone 0)",
+        "temp_high (zone 1)",
+        "temp_high (zone 2)",
+        "temp_high (zone 3)",
+        "temp_high (zone 4)",
+        "temp_high (zone 5)",
+        "temp_high (zone 6)",
+        "temp_high (zone 7)",
+        "temp_high (zone 8)",
+        "temp_high (zone 9)",
+        "temp_high (zone 10)",
+        "temp_high (zone 11)",
+        "temp_high (zone 12)",
+        "temp_high (zone 13)",
+        "temp_high (zone 14)",
+        "temp_high (zone 15)",
         "boiler_modulation_level",
         "datetime",
         "domain_id",
