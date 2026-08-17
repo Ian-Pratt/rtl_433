@@ -117,9 +117,10 @@ static int parse_msg(bitbuffer_t *bmsg, int row, message_t *msg)
     const uint8_t *bb = bmsg->bb[row];
     memset(msg, 0, sizeof(message_t));
 
-    // Checksum: All bytes add up to 0.
+    // Checksum: All bytes usually add up to 0. Headers 0x8c and 0x9c use a residue of 1.
     int bsum = add_bytes(bb, num_bytes) & 0xff;
-    int checksum_ok = bsum == 0;
+    uint8_t header = bitrow_get_byte(bb, 0);
+    int checksum_ok = bsum == 0 || (bsum == 1 && (header == 0x8c || header == 0x9c));
     msg->crc = bitrow_get_byte(bb, bmsg->bits_per_row[row] - 8);
     msg->csum_residue = bsum;
 
@@ -135,6 +136,8 @@ static int parse_msg(bitbuffer_t *bmsg, int row, message_t *msg)
                           msg->header == 0x1c ? 2 :
                           msg->header == 0x10 ? 2 :
                           msg->header == 0x3c ? 2 :
+                          msg->header == 0x8c ? 2 :
+                          msg->header == 0x9c ? 2 :
                 (msg->header >> 2) & 0x03; // total speculation.
 
     for (unsigned i = 0; i < msg->num_device_ids; i++) {
