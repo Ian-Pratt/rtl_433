@@ -45,6 +45,7 @@ typedef struct {
     uint8_t header;
     uint8_t num_device_ids;
     uint8_t device_id[4][3];
+    uint8_t seq;
     uint16_t command;
     uint8_t payload_length;
     uint8_t payload[256];
@@ -128,6 +129,7 @@ static int parse_msg(bitbuffer_t *bmsg, int row, message_t *msg)
 
     msg->num_device_ids = msg->header == 0x14 ? 1 :
                           msg->header == 0x18 ? 2 :
+                          msg->header == 0x1a ? 2 :
                           msg->header == 0x1c ? 2 :
                           msg->header == 0x10 ? 2 :
                           msg->header == 0x3c ? 2 :
@@ -137,6 +139,11 @@ static int parse_msg(bitbuffer_t *bmsg, int row, message_t *msg)
         for (unsigned j = 0; j < 3; j++) {
             msg->device_id[i][j] = next(bb, &ipos, num_bytes);
         }
+    }
+
+    // Header 0x1a includes a sequence byte between the device IDs and command.
+    if (msg->header == 0x1a) {
+        msg->seq = next(bb, &ipos, num_bytes);
     }
 
     msg->command = (next(bb, &ipos, num_bytes) << 8) | next(bb, &ipos, num_bytes);
