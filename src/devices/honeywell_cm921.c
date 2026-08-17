@@ -176,8 +176,9 @@ static int honeywell_cm921_decode(r_device *decoder, bitbuffer_t *bitbuffer)
     // post=10101100
     // each byte surrounded by start/stop bits (0byte1)
     // then manchester decode.
-    const uint8_t preamble_pattern[4] = { 0x55, 0x5F, 0xF0, 0x04 };
-    const uint8_t preamble_bit_length = 30;
+    // The first nibble is frequently corrupted in otherwise valid packets.
+    const uint8_t preamble_pattern[4] = { 0x55, 0xFF, 0x00, 0x40 };
+    const uint8_t preamble_bit_length = 26;
     const int row = 0; // we expect a single row only.
 
     if (bitbuffer->num_rows != 1 || bitbuffer->bits_per_row[row] < 60) {
