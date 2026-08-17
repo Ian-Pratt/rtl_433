@@ -214,47 +214,58 @@ static int honeywell_cm921_decode(r_device *decoder, bitbuffer_t *bitbuffer)
         pos += 10;
     }
 
-    // Skip Manchester breaking header
-    uint8_t header[3] = { 0x33, 0x55, 0x53 };
-    if (bitrow_get_byte(bytes.bb[row], 0) != header[0] ||
-            bitrow_get_byte(bytes.bb[row], 8) != header[1] ||
-            bitrow_get_byte(bytes.bb[row], 16) != header[2]) {
-        return DECODE_FAIL_SANITY;
-    }
+    // Some devices send multiple messages separated by 0xff00.
+    uint8_t header[3]    = { 0x33, 0x55, 0x53 };
+    uint8_t separator[2] = { 0xFF, 0x00 };
+    unsigned segment_pos = 0;
+    int event_count      = 0;
+    int last_error       = DECODE_FAIL_SANITY;
 
-    // Find Footer 0x35 (0x55*)
-    int fi = bytes.bits_per_row[row] - 8;
-    int seen_aa = 0;
-    while (bitrow_get_byte(bytes.bb[row], fi) == 0x55) {
-        seen_aa = 1;
-        fi -= 8;
-    }
-    if (!seen_aa || bitrow_get_byte(bytes.bb[row], fi) != 0x35) {
-        return DECODE_FAIL_SANITY;
-    }
+    while (segment_pos < bytes.bits_per_row[row]) {
+        unsigned header_start = bitbuffer_search(&bytes, row, segment_pos, header, sizeof(header) * 8);
+        if (header_start >= bytes.bits_per_row[row]) {
+            break;
+        }
 
-    unsigned first_byte = 24;
-    unsigned end_byte   = fi;
-    unsigned num_bits   = end_byte - first_byte;
-    //unsigned num_bytes = num_bits/8 / 2;
+        unsigned first_byte     = header_start + sizeof(header) * 8;
+        unsigned separator_pos  = bitbuffer_search(&bytes, row, first_byte, separator, sizeof(separator) * 8);
+        unsigned segment_end    = separator_pos < bytes.bits_per_row[row] ? separator_pos : bytes.bits_per_row[row];
+        segment_pos             = separator_pos < bytes.bits_per_row[row] ? separator_pos + sizeof(separator) * 8 : bytes.bits_per_row[row];
+        if (segment_end < first_byte + 8) {
+            continue;
+        }
 
-    bitbuffer_t packet = {0};
-    unsigned fpos = bitbuffer_manchester_decode(&bytes, row, first_byte, &packet, num_bits);
-    unsigned man_errors = num_bits - (fpos - first_byte - 2);
+        // Find Footer 0x35 (0x55*)
+        unsigned fi = segment_end - 8;
+        int seen_aa = 0;
+        while (fi >= 8 && bitrow_get_byte(bytes.bb[row], fi) == 0x55) {
+            seen_aa = 1;
+            fi -= 8;
+        }
+        if (!seen_aa || bitrow_get_byte(bytes.bb[row], fi) != 0x35 || fi <= first_byte) {
+            continue;
+        }
+
+        unsigned num_bits = fi - first_byte;
+
+        bitbuffer_t packet = {0};
+        unsigned fpos = bitbuffer_manchester_decode(&bytes, row, first_byte, &packet, num_bits);
+        unsigned man_errors = num_bits - (fpos - first_byte - 2);
 
 #ifndef _DEBUG
-    if (man_errors != 0) {
-        return DECODE_FAIL_SANITY;
-    }
+        if (man_errors != 0) {
+            continue;
+        }
 #endif
 
-    message_t msg;
+        message_t msg;
 
-    int pr = parse_msg(&packet, 0, &msg);
+        int pr = parse_msg(&packet, 0, &msg);
 
-    if (pr <= 0) {
-        return pr;
-    }
+        if (pr <= 0) {
+            last_error = pr;
+            continue;
+        }
 
     /* clang-format off */
     data_t *data = data_str(NULL, "model",    "",             NULL, "Honeywell-CM921");
@@ -453,8 +464,10 @@ static int honeywell_cm921_decode(r_device *decoder, bitbuffer_t *bitbuffer)
     /* clang-format on */
 
     decoder_output_data(decoder, data);
+        event_count++;
+    }
 
-    return 1;
+    return event_count > 0 ? event_count : last_error;
 }
 
 static char const *const output_fields[] = {
