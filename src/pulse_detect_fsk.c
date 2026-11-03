@@ -28,7 +28,7 @@ void pulse_detect_fsk_init(pulse_detect_fsk_t *s)
     *s              = (pulse_detect_fsk_t){0};
     s->var_test_max = INT16_MIN;
     s->var_test_min = INT16_MAX;
-    s->skip_samples = 40;
+    s->skip_samples = 50;
 }
 
 void pulse_detect_fsk_classic(pulse_detect_fsk_t *s, int16_t fm_n, pulse_data_t *fsk_pulses)
