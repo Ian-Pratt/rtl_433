@@ -29,6 +29,7 @@ enum {
     FSK_PULSE_DETECT_OLD,
     FSK_PULSE_DETECT_NEW,
     FSK_PULSE_DETECT_AUTO,
+    FSK_PULSE_DETECT_HYBRID,
     FSK_PULSE_DETECT_END,
 };
 
@@ -62,12 +63,13 @@ void pulse_detect_set_levels(pulse_detect_t *pulse_detect, int use_mag_est, floa
 /// @param samp_rate Sample rate in samples per second
 /// @param sample_offset Offset tracking for ringbuffer
 /// @param[in,out] pulses Will return a pulse_data_t structure
-/// @param[in,out] fsk_pulses Will return a pulse_data_t structure for FSK demodulated data
+/// @param[in,out] fsk_pulses Will return the primary pulse_data_t structure for FSK demodulated data
+/// @param[in,out] fsk_pulses_classic Will return classic FSK data in hybrid mode
 /// @param fpdm Index of filter setting to use
 /// @return if a package is detected
 /// @retval 0 all input sample data is processed
 /// @retval 1 OOK package is detected (but all sample data is still not completely processed)
 /// @retval 2 FSK package is detected (but all sample data is still not completely processed)
-int pulse_detect_package(pulse_detect_t *pulse_detect, int16_t const *envelope_data, int16_t const *fm_data, int len, uint32_t samp_rate, uint64_t sample_offset, pulse_data_t *pulses, pulse_data_t *fsk_pulses, unsigned fpdm);
+int pulse_detect_package(pulse_detect_t *pulse_detect, int16_t const *envelope_data, int16_t const *fm_data, int len, uint32_t samp_rate, uint64_t sample_offset, pulse_data_t *pulses, pulse_data_t *fsk_pulses, pulse_data_t *fsk_pulses_classic, unsigned fpdm);
 
 #endif /* INCLUDE_PULSE_DETECT_H_ */

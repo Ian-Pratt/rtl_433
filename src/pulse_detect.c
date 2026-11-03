@@ -51,6 +51,7 @@ struct pulse_detect {
     int verbosity; ///< Debug output verbosity, 0=None, 1=Levels, 2=Histograms
 
     pulse_detect_fsk_t pulse_detect_fsk;
+    pulse_detect_fsk_t pulse_detect_fsk_classic;
 };
 
 pulse_detect_t *pulse_detect_create(void)
@@ -81,6 +82,52 @@ void pulse_detect_reset(pulse_detect_t *pulse_detect)
     pulse_detect->ook_low_estimate  = 0;
     pulse_detect->ook_high_estimate = 0;
     pulse_detect_fsk_init(&pulse_detect->pulse_detect_fsk);
+    pulse_detect_fsk_init(&pulse_detect->pulse_detect_fsk_classic);
+}
+
+static int fsk_pulses_detected(pulse_data_t const *fsk_pulses, pulse_data_t const *fsk_pulses_classic, unsigned fpdm)
+{
+    return fsk_pulses->num_pulses > PD_MIN_PULSES
+            || (fpdm == FSK_PULSE_DETECT_HYBRID && fsk_pulses_classic->num_pulses > PD_MIN_PULSES);
+}
+
+static void fsk_demod_sample(pulse_detect_t *s, int16_t fm_n, pulse_data_t *fsk_pulses, pulse_data_t *fsk_pulses_classic, unsigned fpdm)
+{
+    if (fpdm == FSK_PULSE_DETECT_OLD) {
+        pulse_detect_fsk_classic(&s->pulse_detect_fsk, fm_n, fsk_pulses);
+    }
+    else {
+        pulse_detect_fsk_minmax(&s->pulse_detect_fsk, fm_n, fsk_pulses);
+        if (fpdm == FSK_PULSE_DETECT_HYBRID) {
+            pulse_detect_fsk_classic(&s->pulse_detect_fsk_classic, fm_n, fsk_pulses_classic);
+        }
+    }
+}
+
+static void fsk_finalize(pulse_detect_t *s, pulse_data_t *pulses, pulse_data_t *fsk_pulses, pulse_data_t *fsk_pulses_classic, unsigned fpdm, int end_ago)
+{
+    if (fpdm == FSK_PULSE_DETECT_OLD) {
+        pulse_detect_fsk_wrap_up(&s->pulse_detect_fsk, fsk_pulses);
+    }
+    else if (fpdm == FSK_PULSE_DETECT_HYBRID) {
+        pulse_detect_fsk_wrap_up(&s->pulse_detect_fsk_classic, fsk_pulses_classic);
+    }
+
+    fsk_pulses->fsk_f1_est = s->pulse_detect_fsk.fm_f1_est;
+    fsk_pulses->fsk_f2_est = s->pulse_detect_fsk.fm_f2_est;
+    fsk_pulses->ook_low_estimate = s->ook_low_estimate;
+    fsk_pulses->ook_high_estimate = s->ook_high_estimate;
+    fsk_pulses->end_ago = end_ago;
+
+    if (fpdm == FSK_PULSE_DETECT_HYBRID) {
+        fsk_pulses_classic->fsk_f1_est = s->pulse_detect_fsk_classic.fm_f1_est;
+        fsk_pulses_classic->fsk_f2_est = s->pulse_detect_fsk_classic.fm_f2_est;
+        fsk_pulses_classic->ook_low_estimate = s->ook_low_estimate;
+        fsk_pulses_classic->ook_high_estimate = s->ook_high_estimate;
+        fsk_pulses_classic->end_ago = end_ago;
+    }
+
+    pulses->end_ago = end_ago;
 }
 
 void pulse_detect_set_levels(pulse_detect_t *pulse_detect, int use_mag_est, float fixed_high_level, float min_high_level, float high_low_ratio, int verbosity)
@@ -196,7 +243,7 @@ static void print_att_hist(char const *s, int att_hist[])
 }
 
 /// Demodulate On/Off Keying (OOK) and Frequency Shift Keying (FSK) from an envelope signal
-int pulse_detect_package(pulse_detect_t *pulse_detect, int16_t const *envelope_data, int16_t const *fm_data, int len, uint32_t samp_rate, uint64_t sample_offset, pulse_data_t *pulses, pulse_data_t *fsk_pulses, unsigned fpdm)
+int pulse_detect_package(pulse_detect_t *pulse_detect, int16_t const *envelope_data, int16_t const *fm_data, int len, uint32_t samp_rate, uint64_t sample_offset, pulse_data_t *pulses, pulse_data_t *fsk_pulses, pulse_data_t *fsk_pulses_classic, unsigned fpdm)
 {
     pulse_detect_t *s = pulse_detect;
 
@@ -236,18 +283,8 @@ int pulse_detect_package(pulse_detect_t *pulse_detect, int16_t const *envelope_d
         case PD_OOK_STATE_GAP_START:
             s->ook_state = PD_OOK_STATE_GAP;
             // Determine if FSK modulation is detected
-            if (fsk_pulses->num_pulses > PD_MIN_PULSES) {
-                // Store last pulse/gap
-                if (fpdm == FSK_PULSE_DETECT_OLD) {
-                    pulse_detect_fsk_wrap_up(&s->pulse_detect_fsk, fsk_pulses);
-                }
-                // Store estimates
-                fsk_pulses->fsk_f1_est        = s->pulse_detect_fsk.fm_f1_est;
-                fsk_pulses->fsk_f2_est        = s->pulse_detect_fsk.fm_f2_est;
-                fsk_pulses->ook_low_estimate  = s->ook_low_estimate;
-                fsk_pulses->ook_high_estimate = s->ook_high_estimate;
-                pulses->end_ago               = len - s->data_counter;
-                fsk_pulses->end_ago           = len - s->data_counter;
+            if (fsk_pulses_detected(fsk_pulses, fsk_pulses_classic, fpdm)) {
+                fsk_finalize(s, pulses, fsk_pulses, fsk_pulses_classic, fpdm, len - s->data_counter);
                 s->ook_state                  = PD_OOK_STATE_IDLE; // Ensure everything is reset
 
                 return PULSE_DATA_FSK;
@@ -286,6 +323,7 @@ int pulse_detect_package(pulse_detect_t *pulse_detect, int16_t const *envelope_d
         // age the pulse_data if this is a fresh buffer
         pulses->start_ago += len;
         fsk_pulses->start_ago += len;
+        fsk_pulses_classic->start_ago += len;
     }
 
     int eop_on_spurious = 0;
@@ -311,15 +349,20 @@ int pulse_detect_package(pulse_detect_t *pulse_detect, int16_t const *envelope_d
                     // Initialize all data
                     pulse_data_clear(pulses);
                     pulse_data_clear(fsk_pulses);
+                    pulse_data_clear(fsk_pulses_classic);
                     pulses->sample_rate = samp_rate;
                     fsk_pulses->sample_rate = samp_rate;
+                    fsk_pulses_classic->sample_rate = samp_rate;
                     pulses->offset = sample_offset + s->data_counter;
                     fsk_pulses->offset = sample_offset + s->data_counter;
+                    fsk_pulses_classic->offset = sample_offset + s->data_counter;
                     pulses->start_ago = len - s->data_counter;
                     fsk_pulses->start_ago = len - s->data_counter;
+                    fsk_pulses_classic->start_ago = len - s->data_counter;
                     s->pulse_length = 0;
                     s->max_pulse = 0;
                     pulse_detect_fsk_init(&s->pulse_detect_fsk);
+                    pulse_detect_fsk_init(&s->pulse_detect_fsk_classic);
                     s->ook_state = PD_OOK_STATE_PULSE;
                 }
                 else {    // We are still idle..
@@ -366,11 +409,7 @@ int pulse_detect_package(pulse_detect_t *pulse_detect, int16_t const *envelope_d
                 }
                 // FSK Demodulation
                 if (pulses->num_pulses == 0) {    // Only during first pulse
-                    if (fpdm == FSK_PULSE_DETECT_OLD) {
-                        pulse_detect_fsk_classic(&s->pulse_detect_fsk, fm_data[s->data_counter], fsk_pulses);
-                    } else {
-                        pulse_detect_fsk_minmax(&s->pulse_detect_fsk, fm_data[s->data_counter], fsk_pulses);
-                    }
+                    fsk_demod_sample(s, fm_data[s->data_counter], fsk_pulses, fsk_pulses_classic, fpdm);
                 }
                 break;
             case PD_OOK_STATE_GAP_START:    // Beginning of gap - it might be a spurious gap
@@ -384,18 +423,8 @@ int pulse_detect_package(pulse_detect_t *pulse_detect, int16_t const *envelope_d
                 else if (s->pulse_length >= PD_MIN_PULSE_SAMPLES) {
                     s->ook_state = PD_OOK_STATE_GAP;
                     // Determine if FSK modulation is detected
-                    if (fsk_pulses->num_pulses > PD_MIN_PULSES) {
-                        // Store last pulse/gap
-                        if (fpdm == FSK_PULSE_DETECT_OLD) {
-                            pulse_detect_fsk_wrap_up(&s->pulse_detect_fsk, fsk_pulses);
-                        }
-                        // Store estimates
-                        fsk_pulses->fsk_f1_est = s->pulse_detect_fsk.fm_f1_est;
-                        fsk_pulses->fsk_f2_est = s->pulse_detect_fsk.fm_f2_est;
-                        fsk_pulses->ook_low_estimate = s->ook_low_estimate;
-                        fsk_pulses->ook_high_estimate = s->ook_high_estimate;
-                        pulses->end_ago = len - s->data_counter;
-                        fsk_pulses->end_ago = len - s->data_counter;
+                    if (fsk_pulses_detected(fsk_pulses, fsk_pulses_classic, fpdm)) {
+                        fsk_finalize(s, pulses, fsk_pulses, fsk_pulses_classic, fpdm, len - s->data_counter);
                         s->ook_state = PD_OOK_STATE_IDLE;    // Ensure everything is reset
                         if (pulse_detect->verbosity >= LOG_INFO) {
                             print_att_hist("PULSE_DATA_FSK", att_hist);
@@ -412,11 +441,7 @@ int pulse_detect_package(pulse_detect_t *pulse_detect, int16_t const *envelope_d
                 } // if
                 // FSK Demodulation (continue during short gap - we might return...)
                 if (pulses->num_pulses == 0) {    // Only during first pulse
-                    if (fpdm == FSK_PULSE_DETECT_OLD) {
-                        pulse_detect_fsk_classic(&s->pulse_detect_fsk, fm_data[s->data_counter], fsk_pulses);
-                    } else {
-                        pulse_detect_fsk_minmax(&s->pulse_detect_fsk, fm_data[s->data_counter], fsk_pulses);
-                    }
+                    fsk_demod_sample(s, fm_data[s->data_counter], fsk_pulses, fsk_pulses_classic, fpdm);
                 }
                 break;
             case PD_OOK_STATE_GAP:

@@ -241,7 +241,8 @@ int push_sdr_flow(r_cfg_t *cfg, unsigned char *iq_buf, uint32_t len)
         while (package_type && process_frame) {
             int p_events = 0; // Sensor events successfully detected per package
             package_type = pulse_detect_package(demod->pulse_detect, demod->am_buf, demod->buf.fm, n_samples,
-                    demod->samp_rate, demod->input_pos, &demod->pulse_data, &demod->fsk_pulse_data, demod->fsk_pulse_detect_mode);
+                    demod->samp_rate, demod->input_pos, &demod->pulse_data, &demod->fsk_pulse_data,
+                    &demod->fsk_pulse_data_classic, demod->fsk_pulse_detect_mode);
             if (package_type) {
                 // new package: set a first frame start if we are not tracking one already
                 if (!demod->frame_start_ago) {
@@ -300,6 +301,13 @@ int push_sdr_flow(r_cfg_t *cfg, unsigned char *iq_buf, uint32_t len)
                 }
 
                 p_events += run_fsk_demods(&demod->r_devs, &demod->fsk_pulse_data);
+                if (p_events == 0 && demod->fsk_pulse_detect_mode == FSK_PULSE_DETECT_HYBRID) {
+                    pulse_data_t fsk_pulse_data = demod->fsk_pulse_data;
+                    demod->fsk_pulse_data = demod->fsk_pulse_data_classic;
+                    demod->fsk_pulse_data_classic = fsk_pulse_data;
+                    calc_rssi_snr(demod, &demod->fsk_pulse_data);
+                    p_events += run_fsk_demods(&demod->r_devs, &demod->fsk_pulse_data);
+                }
                 demod->total_frames_fsk += 1;
                 demod->total_frames_events += p_events > 0;
                 demod->frames_fsk += 1;

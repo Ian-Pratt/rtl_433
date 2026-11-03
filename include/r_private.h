@@ -52,6 +52,7 @@ struct dm_state {
 
     pulse_data_t    pulse_data;
     pulse_data_t    fsk_pulse_data;
+    pulse_data_t    fsk_pulse_data_classic;
     uint64_t input_pos;
     unsigned frame_event_count;
     int frame_quality;
