@@ -15,6 +15,7 @@
 #include "am_analyze.h"
 #include "rtl_433.h"
 #include "compat_time.h"
+#include "soft_fsk.h"
 
 struct dm_state {
     float auto_level;
@@ -70,6 +71,9 @@ struct dm_state {
     int verbosity; ///< 0=normal, 1=verbose, 2=verbose decoders, 3=debug decoders, 4=trace decoding.
     int report_noise;
     list_t *raw_handler;
+
+    /* Optional protocol-specific weak-signal scanner state. */
+    soft_fsk_stream_t wh55_soft;
 
     /* global stats */
     time_t running_since;          ///< program start time statistic

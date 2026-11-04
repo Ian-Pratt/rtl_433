@@ -78,6 +78,7 @@ typedef struct r_cfg {
     uint32_t frequency[MAX_FREQS];   ///< A list of hopping frequencies.
     uint32_t center_frequency;       ///< The current center frequency of the live or file input.
     int fsk_pulse_detect_mode;
+    uint32_t wh55_soft_id; ///< WH55 sensor ID for the opt-in raw-IQ soft scanner (0=off)
     int hop_times;
     int hop_time[MAX_FREQS];
     time_t hop_start_time;

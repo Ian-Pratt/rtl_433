@@ -45,6 +45,7 @@ add_library(r_433 STATIC
     rfraw.c
     samp_grab.c
     sdr.c
+    soft_fsk.c
     sigmf.c
     string_expand.c
     term_ctl.c

@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #define SOFT_FSK_MAX_BYTES 32
+#define SOFT_FSK_STREAM_OVERLAP_SAMPLES 10000
 
 typedef struct soft_fsk_result {
     size_t start;
@@ -17,6 +18,12 @@ typedef struct soft_fsk_result {
     unsigned bit_count;
     uint8_t bytes[SOFT_FSK_MAX_BYTES];
 } soft_fsk_result_t;
+
+typedef struct soft_fsk_stream {
+    uint8_t overlap[SOFT_FSK_STREAM_OVERLAP_SAMPLES * 2];
+    size_t overlap_samples;
+    uint64_t last_packet_start_plus_one;
+} soft_fsk_stream_t;
 
 /** Search CU8 IQ for an MSB-first preamble carried by two known FSK tones.
 

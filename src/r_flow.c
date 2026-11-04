@@ -14,12 +14,14 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <math.h>
 
 #include "r_flow.h"
 #include "rtl_433.h"
 #include "r_private.h"
 #include "r_device.h"
 #include "r_api.h"
+#include "bitbuffer.h"
 #include "baseband.h"
 #include "pulse_analyzer.h"
 #include "pulse_detect.h"
@@ -31,6 +33,184 @@
 #include "am_analyze.h"
 #include "logger.h"
 #include "fatal.h"
+#include "soft_fsk.h"
+
+#define WH55_SOFT_TONE0_HZ 868320000.0f
+#define WH55_SOFT_TONE1_HZ 868375000.0f
+#define WH55_SOFT_SCORE_MIN 0.90f
+
+static uint8_t wh55_crc8(uint8_t const *message, unsigned length)
+{
+    uint8_t remainder = 0;
+
+    for (unsigned byte = 0; byte < length; ++byte) {
+        remainder ^= message[byte];
+        for (unsigned bit = 0; bit < 8; ++bit) {
+            remainder = remainder & 0x80 ? (remainder << 1) ^ 0x31 : remainder << 1;
+        }
+    }
+    return remainder;
+}
+
+static r_device *find_wh55_device(struct dm_state *demod)
+{
+    for (void **iter = demod->r_devs.elems; iter && *iter; ++iter) {
+        r_device *device = *iter;
+        if (!strcmp(device->name, "Fine Offset / Ecowitt WH55 water leak sensor")) {
+            return device;
+        }
+    }
+    return NULL;
+}
+
+static float cu8_mean_power(uint8_t const *iq, size_t begin, size_t end)
+{
+    double power = 0.0;
+
+    if (end <= begin) {
+        return 1.0f;
+    }
+    for (size_t sample = begin; sample < end; ++sample) {
+        float i = iq[sample * 2] - 127.5f;
+        float q = iq[sample * 2 + 1] - 127.5f;
+        power += i * i + q * q;
+    }
+    return (float)(power / (end - begin));
+}
+
+static float cu8_noise_floor(uint8_t const *iq, size_t sample_count,
+        size_t packet_begin, size_t packet_end)
+{
+    float floor = INFINITY;
+    size_t before = packet_begin > 20000 ? packet_begin - 20000 : 0;
+    size_t after = packet_end + 20000 < sample_count ? packet_end + 20000 : sample_count;
+
+    for (size_t begin = before; begin + 500 <= packet_begin; begin += 500) {
+        float power = cu8_mean_power(iq, begin, begin + 500);
+        floor = power < floor ? power : floor;
+    }
+    for (size_t begin = packet_end; begin + 500 <= after; begin += 500) {
+        float power = cu8_mean_power(iq, begin, begin + 500);
+        floor = power < floor ? power : floor;
+    }
+    return isfinite(floor) ? floor : 1.0f;
+}
+
+static int run_wh55_soft(r_cfg_t *cfg, r_device *device, uint8_t const *iq,
+        size_t sample_count, int normal_wh55_decoded)
+{
+    static uint8_t const preamble[] = {0xaa, 0xaa, 0xaa, 0x2d, 0xd4, 0x55};
+    struct dm_state *demod = cfg->demod;
+    soft_fsk_stream_t *stream = &demod->wh55_soft;
+    soft_fsk_result_t result;
+    size_t old_overlap = stream->overlap_samples;
+    size_t combined_samples = old_overlap + sample_count;
+    size_t packet_samples;
+    uint64_t combined_pos;
+    uint64_t packet_pos;
+    uint8_t *combined;
+    unsigned symbol_samples;
+    unsigned sensor_id;
+    float tone0;
+    float tone1;
+    float signal_power;
+    float noise_power;
+    int events = 0;
+
+    if (!cfg->wh55_soft_id || !device || demod->sample_size != 2 || !sample_count ||
+            demod->samp_rate < 800000 || demod->samp_rate > 1200000) {
+        return 0;
+    }
+
+    tone0 = WH55_SOFT_TONE0_HZ - demod->center_frequency;
+    tone1 = WH55_SOFT_TONE1_HZ - demod->center_frequency;
+    if (fabsf(tone0) >= demod->samp_rate / 2.0f || fabsf(tone1) >= demod->samp_rate / 2.0f) {
+        return 0;
+    }
+    symbol_samples = (unsigned)lroundf(demod->samp_rate * 58.0e-6f);
+    combined = malloc(combined_samples * 2);
+    if (!combined) {
+        return 0;
+    }
+    memcpy(combined, stream->overlap, old_overlap * 2);
+    memcpy(combined + old_overlap * 2, iq, sample_count * 2);
+
+    int found = soft_fsk_scan_cu8(combined, combined_samples, demod->samp_rate,
+            tone0, tone1, symbol_samples, preamble, 48, 17 * 8, &result);
+
+    size_t keep = combined_samples < SOFT_FSK_STREAM_OVERLAP_SAMPLES ?
+            combined_samples : SOFT_FSK_STREAM_OVERLAP_SAMPLES;
+    memcpy(stream->overlap, combined + (combined_samples - keep) * 2, keep * 2);
+    stream->overlap_samples = keep;
+
+    if (found <= 0 || result.score < WH55_SOFT_SCORE_MIN || result.bytes[5] != 0x55 ||
+            wh55_crc8(&result.bytes[5], 8) != result.bytes[13]) {
+        free(combined);
+        return 0;
+    }
+
+    sensor_id = (result.bytes[7] << 8) | result.bytes[8];
+    if (cfg->wh55_soft_id != UINT32_MAX && sensor_id != cfg->wh55_soft_id) {
+        free(combined);
+        return 0;
+    }
+
+    combined_pos = demod->input_pos - old_overlap;
+    packet_pos = combined_pos + result.start;
+    if (stream->last_packet_start_plus_one &&
+            packet_pos <= stream->last_packet_start_plus_one - 1 + symbol_samples) {
+        free(combined);
+        return 0;
+    }
+    stream->last_packet_start_plus_one = packet_pos + 1;
+
+    /* The regular decoder already emitted this WH55 packet. */
+    if (normal_wh55_decoded) {
+        free(combined);
+        return 0;
+    }
+
+    bitbuffer_t bits = {0};
+    for (unsigned bit = 0; bit < result.bit_count; ++bit) {
+        bitbuffer_add_bit(&bits, result.bytes[bit / 8] >> (7 - bit % 8) & 1);
+    }
+
+    packet_samples = result.bit_count * result.symbol_samples;
+    signal_power = cu8_mean_power(combined, result.start,
+            result.start + packet_samples < combined_samples ? result.start + packet_samples : combined_samples);
+    noise_power = cu8_noise_floor(combined, combined_samples, result.start,
+            result.start + packet_samples < combined_samples ? result.start + packet_samples : combined_samples);
+
+    pulse_data_t saved_fsk = demod->fsk_pulse_data;
+    unsigned saved_start_ago = demod->pulse_data.start_ago;
+    memset(&demod->fsk_pulse_data, 0, sizeof(demod->fsk_pulse_data));
+    demod->fsk_pulse_data.fsk_f1_est = 1;
+    demod->fsk_pulse_data.fsk_f2_est = 1;
+    demod->fsk_pulse_data.freq1_hz = WH55_SOFT_TONE0_HZ;
+    demod->fsk_pulse_data.freq2_hz = WH55_SOFT_TONE1_HZ;
+    demod->fsk_pulse_data.centerfreq_hz = demod->center_frequency;
+    demod->fsk_pulse_data.rssi_db = 10.0f * log10f(signal_power) - 42.1442f;
+    demod->fsk_pulse_data.noise_db = 10.0f * log10f(noise_power) - 42.1442f;
+    demod->fsk_pulse_data.snr_db = 10.0f * log10f(signal_power / noise_power);
+    demod->pulse_data.start_ago = packet_pos < demod->input_pos + sample_count ?
+            demod->input_pos + sample_count - packet_pos : 0;
+
+    int ret = device->decode_fn(device, &bits);
+    device->decode_events += 1;
+    if (ret > 0) {
+        device->decode_ok += 1;
+        device->decode_messages += ret;
+        events = ret;
+    }
+    else if (ret >= DECODE_FAIL_SANITY) {
+        device->decode_fails[-ret] += 1;
+    }
+
+    demod->pulse_data.start_ago = saved_start_ago;
+    demod->fsk_pulse_data = saved_fsk;
+    free(combined);
+    return events;
+}
 
 static void calc_rssi_snr(struct dm_state const *demod, pulse_data_t *pulse_data)
 {
@@ -89,6 +269,7 @@ void reset_sdr_flow(r_cfg_t *cfg)
 
     demod->min_level_auto = 0.0f;
     demod->noise_level    = 0.0f;
+    memset(&demod->wh55_soft, 0, sizeof(demod->wh55_soft));
 
     baseband_low_pass_filter_reset(&demod->lowpass_filter_state);
     baseband_demod_FM_reset(&demod->demod_FM_state);
@@ -113,6 +294,8 @@ int push_sdr_flow(r_cfg_t *cfg, unsigned char *iq_buf, uint32_t len)
     }
 
     unsigned long n_samples = len / demod->sample_size;
+    r_device *wh55_device = cfg->wh55_soft_id ? find_wh55_device(demod) : NULL;
+    unsigned wh55_decode_ok_before = wh55_device ? wh55_device->decode_ok : 0;
     if (n_samples * demod->sample_size != len) {
         print_log(LOG_WARNING, __func__, "Sample buffer length not aligned to sample size!");
     }
@@ -494,6 +677,11 @@ int push_sdr_flow(r_cfg_t *cfg, unsigned char *iq_buf, uint32_t len)
             print_log(LOG_ERROR, __func__, "Short write, samples lost, exiting!");
             d_events = -1; // report error, handler should exit
         }
+    }
+
+    if (len && wh55_device) {
+        d_events += run_wh55_soft(cfg, wh55_device, iq_buf, n_samples,
+                wh55_device->decode_ok > wh55_decode_ok_before);
     }
 
     demod->input_pos += n_samples;
