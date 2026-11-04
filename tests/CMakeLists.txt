@@ -7,6 +7,10 @@ target_link_libraries(data-test data)
 
 add_test(data-test data-test)
 
+add_executable(wh55-soft-scan wh55-soft-scan.c ../src/soft_fsk.c)
+
+target_link_libraries(wh55-soft-scan m)
+
 add_executable(string-expand-test string-expand-test.c ../src/string_expand.c ../src/logger.c ../src/compat_time.c)
 
 target_link_libraries(string-expand-test data)
