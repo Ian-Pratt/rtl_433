@@ -73,7 +73,7 @@ struct dm_state {
     list_t *raw_handler;
 
     /* Optional protocol-specific weak-signal scanner state. */
-    soft_fsk_stream_t wh55_soft;
+    soft_fsk_stream_t fineoffset_soft;
 
     /* global stats */
     time_t running_since;          ///< program start time statistic

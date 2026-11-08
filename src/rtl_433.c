@@ -135,7 +135,7 @@ static void usage(int exit_code)
             "       Specify a negative number to disable a device decoding protocol (can be used multiple times)\n"
             "  [-X <spec> | help] Add a general purpose decoder (prepend -R 0 to disable all decoders)\n"
             "  [-Y auto | classic | minmax | hybrid] FSK pulse detector mode.\n"
-            "  [-Y wh55soft[=<id>]] WH55 raw-IQ fallback.\n"
+            "  [-Y wh55soft[=<id>] | finesoft] Raw-IQ fallback.\n"
             "  [-Y level=<dB level>] Manual detection level used to determine pulses (-1.0 to -30.0) (0=auto).\n"
             "  [-Y minlevel=<dB level>] Manual minimum detection level used to determine pulses (-1.0 to -99.0).\n"
             "  [-Y minsnr=<dB level>] Minimum SNR to determine pulses (1.0 to 99.0).\n"
@@ -966,6 +966,9 @@ static void parse_conf_option(r_cfg_t *cfg, int opt, char *arg)
                     fprintf(stderr, "-Y wh55soft sensor ID must be non-zero\n");
                     usage(1);
                 }
+            }
+            else if (kwargs_match(p, "finesoft", &val)) {
+                cfg->fineoffset_soft = 1;
             }
             else if (kwargs_match(p, "ampest", &val)) {
                 cfg->demod->use_mag_est = 0;

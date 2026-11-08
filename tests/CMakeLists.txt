@@ -11,6 +11,10 @@ add_executable(wh55-soft-scan wh55-soft-scan.c ../src/soft_fsk.c)
 
 target_link_libraries(wh55-soft-scan m)
 
+add_executable(fineoffset-soft-scan fineoffset-soft-scan.c ../src/soft_fsk.c)
+
+target_link_libraries(fineoffset-soft-scan m)
+
 add_executable(string-expand-test string-expand-test.c ../src/string_expand.c ../src/logger.c ../src/compat_time.c)
 
 target_link_libraries(string-expand-test data)
