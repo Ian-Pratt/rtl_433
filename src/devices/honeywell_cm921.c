@@ -176,32 +176,6 @@ static int parse_msg(bitbuffer_t *bmsg, int row, message_t *msg)
     return ipos;
 }
 
-static int valid_command_shape(message_t const *msg)
-{
-    unsigned length = msg->payload_length;
-
-    switch (msg->command) {
-    case 0x1030: return length == 16;
-    case 0x313f: return length == 1 || length == 9;
-    case 0x0008: return length == 2;
-    case 0x3ef0: return length == 3 || length == 6;
-    case 0x2309: return length > 0 && length % 3 == 0;
-    case 0x1100: return length == 5 || length == 8;
-    case 0x0009: return length == 3;
-    case 0x3b00: return length == 2;
-    case 0x30c9: return length > 0 && length % 3 == 0;
-    case 0x1fd4: return length == 3;
-    case 0x3150: return length == 2;
-    case 0x1f09:
-    case 0x2389:
-    case 0x2d49: return length == 3;
-    case 0x0002: return length == 4;
-    case 0x1060: return length == 3;
-    case 0x000a: return length > 0 && length % 6 == 0;
-    default: return 1; // Preserve passthrough of genuinely unknown commands.
-    }
-}
-
 static int honeywell_cm921_decode(r_device *decoder, bitbuffer_t *bitbuffer)
 {
     // Sources of inspiration:
@@ -319,11 +293,6 @@ static int honeywell_cm921_decode(r_device *decoder, bitbuffer_t *bitbuffer)
             last_error = pr;
             continue;
         }
-        if (!valid_command_shape(&msg)) {
-            last_error = DECODE_FAIL_SANITY;
-            continue;
-        }
-
     /* clang-format off */
     data_t *data = data_str(NULL, "model",    "",             NULL, "Honeywell-CM921");
     /* clang-format on */
