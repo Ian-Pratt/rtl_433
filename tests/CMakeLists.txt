@@ -104,6 +104,11 @@ if(UNIX)
                 COMMAND ${BASH_PROGRAM}
                     ${CMAKE_CURRENT_SOURCE_DIR}/statslog-output-test.sh
                     $<TARGET_FILE:rtl_433>)
+            add_test(
+                NAME honeywell_decoder_sanity
+                COMMAND ${BASH_PROGRAM}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/honeywell-decoder-sanity-test.sh
+                    $<TARGET_FILE:rtl_433>)
         else()
             message(STATUS "Skipping http_server_rtltcp test (need python3)")
         endif()

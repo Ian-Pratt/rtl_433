@@ -95,27 +95,22 @@ static void decode_device_id(const uint8_t device_id[3], char *buf, size_t buf_s
 }
 */
 
-static uint8_t next(const uint8_t *bb, unsigned *ipos, unsigned num_bytes)
-{
-    uint8_t r = bitrow_get_byte(bb, *ipos);
-    *ipos += 8;
-    if (*ipos >= num_bytes * 8) {
-        return DECODE_FAIL_SANITY;
-    }
-    return r;
-}
-
 static int parse_msg(bitbuffer_t *bmsg, int row, message_t *msg)
 {
     if (!bmsg || row >= bmsg->num_rows || bmsg->bits_per_row[row] < 8) {
         return DECODE_ABORT_LENGTH;
     }
 
-    unsigned num_bytes = bmsg->bits_per_row[0]/8;
-    unsigned num_bits = bmsg->bits_per_row[0];
+    unsigned num_bytes = bmsg->bits_per_row[row] / 8;
     unsigned ipos = 0;
     const uint8_t *bb = bmsg->bb[row];
     memset(msg, 0, sizeof(message_t));
+
+    // RAMSES-II packets are at most 64 bytes. More importantly, reject a
+    // partial final byte before using the payload length as a copy bound.
+    if (bmsg->bits_per_row[row] % 8 != 0 || num_bytes < 9 || num_bytes > 64) {
+        return DECODE_ABORT_LENGTH;
+    }
 
     // Checksum: All bytes usually add up to 0. Headers 0x8c and 0x9c use a residue of 1.
     int bsum = add_bytes(bb, num_bytes) & 0xff;
@@ -128,7 +123,8 @@ static int parse_msg(bitbuffer_t *bmsg, int row, message_t *msg)
         return DECODE_FAIL_MIC;
     }
 
-    msg->header = next(bb, &ipos, num_bytes);
+    msg->header = bitrow_get_byte(bb, ipos);
+    ipos += 8;
 
     msg->num_device_ids = msg->header == 0x14 ? 1 :
                           msg->header == 0x18 ? 2 :
@@ -140,33 +136,70 @@ static int parse_msg(bitbuffer_t *bmsg, int row, message_t *msg)
                           msg->header == 0x9c ? 2 :
                 (msg->header >> 2) & 0x03; // total speculation.
 
+    unsigned prefix_bytes = 1 + 3 * msg->num_device_ids +
+            (msg->header == 0x1a ? 1 : 0) + 2 + 1;
+    if (prefix_bytes + 1 > num_bytes) {
+        return DECODE_ABORT_LENGTH;
+    }
+
     for (unsigned i = 0; i < msg->num_device_ids; i++) {
         for (unsigned j = 0; j < 3; j++) {
-            msg->device_id[i][j] = next(bb, &ipos, num_bytes);
+            msg->device_id[i][j] = bitrow_get_byte(bb, ipos);
+            ipos += 8;
         }
     }
 
     // Header 0x1a includes a sequence byte between the device IDs and command.
     if (msg->header == 0x1a) {
-        msg->seq = next(bb, &ipos, num_bytes);
+        msg->seq = bitrow_get_byte(bb, ipos);
+        ipos += 8;
     }
 
-    msg->command = (next(bb, &ipos, num_bytes) << 8) | next(bb, &ipos, num_bytes);
-    msg->payload_length = next(bb, &ipos, num_bytes);
+    // header + ids + optional sequence + command + length + checksum must
+    // all be present before the declared payload can be trusted.
+    if (ipos / 8 + 4 > num_bytes) {
+        return DECODE_ABORT_LENGTH;
+    }
+    msg->command = (bitrow_get_byte(bb, ipos) << 8) | bitrow_get_byte(bb, ipos + 8);
+    ipos += 16;
+    msg->payload_length = bitrow_get_byte(bb, ipos);
+    ipos += 8;
+    if (ipos / 8 + msg->payload_length + 1 != num_bytes) {
+        return DECODE_ABORT_LENGTH;
+    }
 
     for (unsigned i = 0; i < msg->payload_length; i++) {
-        msg->payload[i] = next(bb, &ipos, num_bytes);
-    }
-
-    if (ipos < num_bits - 8) {
-        unsigned num_unparsed_bits = (bmsg->bits_per_row[row] - 8) - ipos;
-        msg->unparsed_length = (num_unparsed_bits + 7) / 8;
-        if (msg->unparsed_length != 0) {
-            bitbuffer_extract_bytes(bmsg, row, ipos, msg->unparsed, num_unparsed_bits);
-        }
+        msg->payload[i] = bitrow_get_byte(bb, ipos);
+        ipos += 8;
     }
 
     return ipos;
+}
+
+static int valid_command_shape(message_t const *msg)
+{
+    unsigned length = msg->payload_length;
+
+    switch (msg->command) {
+    case 0x1030: return length == 16;
+    case 0x313f: return length == 1 || length == 9;
+    case 0x0008: return length == 2;
+    case 0x3ef0: return length == 3 || length == 6;
+    case 0x2309: return length > 0 && length % 3 == 0;
+    case 0x1100: return length == 5 || length == 8;
+    case 0x0009: return length == 3;
+    case 0x3b00: return length == 2;
+    case 0x30c9: return length > 0 && length % 3 == 0;
+    case 0x1fd4: return length == 3;
+    case 0x3150: return length == 2;
+    case 0x1f09:
+    case 0x2389:
+    case 0x2d49: return length == 3;
+    case 0x0002: return length == 4;
+    case 0x1060: return length == 3;
+    case 0x000a: return length > 0 && length % 6 == 0;
+    default: return 1; // Preserve passthrough of genuinely unknown commands.
+    }
 }
 
 static int honeywell_cm921_decode(r_device *decoder, bitbuffer_t *bitbuffer)
@@ -284,6 +317,10 @@ static int honeywell_cm921_decode(r_device *decoder, bitbuffer_t *bitbuffer)
                 decoder->decode_checksum_fails++;
             }
             last_error = pr;
+            continue;
+        }
+        if (!valid_command_shape(&msg)) {
+            last_error = DECODE_FAIL_SANITY;
             continue;
         }
 
