@@ -80,6 +80,7 @@ typedef struct r_cfg {
     int fsk_pulse_detect_mode;
     uint32_t wh55_soft_id; ///< WH55 sensor ID for the opt-in raw-IQ soft scanner (0=off)
     int fineoffset_soft; ///< Shared Fine Offset/Ambient Weather raw-IQ scanner
+    int honeywell_soft; ///< Honeywell CM921 raw-IQ scanner
     int hop_times;
     int hop_time[MAX_FREQS];
     time_t hop_start_time;
@@ -106,6 +107,9 @@ typedef struct r_cfg {
     int stats_interval;
     volatile sig_atomic_t stats_now; ///< flag to cause stats to be printed, async written by signal handler and push_sdr_flow()
     time_t stats_time;
+    int report_stats_log; ///< stats level written directly to prefixed stderr
+    int stats_log_interval;
+    time_t stats_log_time;
     int no_default_devices;
     struct r_device *devices;
     uint16_t num_r_devices;

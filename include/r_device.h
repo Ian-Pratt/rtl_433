@@ -85,6 +85,8 @@ typedef struct r_device {
     unsigned decode_ok;
     unsigned decode_messages;
     unsigned decode_fails[5];
+    unsigned decode_crc_fails;
+    unsigned decode_checksum_fails;
 
     /* private for flex decoder and output callback */
     void *decode_ctx;

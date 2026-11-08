@@ -235,14 +235,31 @@ static int honeywell_cm921_decode(r_device *decoder, bitbuffer_t *bitbuffer)
             continue;
         }
 
-        // Find Footer 0x35 (0x55*)
+        // Find Footer 0x35 (0x55*). A weak demodulator can retain a few
+        // start/stop-valid noise bytes after the footer, so search backwards
+        // rather than requiring the 0x55 run to reach the row boundary. The
+        // Manchester and message checksum checks below still validate it.
         unsigned fi = segment_end - 8;
         int seen_aa = 0;
-        while (fi >= 8 && bitrow_get_byte(bytes.bb[row], fi) == 0x55) {
-            seen_aa = 1;
+        int seen_footer = 0;
+        while (fi >= first_byte) {
+            uint8_t value = bitrow_get_byte(bytes.bb[row], fi);
+            if (value == 0x55) {
+                seen_aa = 1;
+            }
+            else if (seen_aa && value == 0x35) {
+                seen_footer = 1;
+                break;
+            }
+            else {
+                seen_aa = 0;
+            }
+            if (fi < first_byte + 8) {
+                break;
+            }
             fi -= 8;
         }
-        if (!seen_aa || bitrow_get_byte(bytes.bb[row], fi) != 0x35 || fi <= first_byte) {
+        if (!seen_footer || fi <= first_byte) {
             continue;
         }
 
@@ -263,6 +280,9 @@ static int honeywell_cm921_decode(r_device *decoder, bitbuffer_t *bitbuffer)
         int pr = parse_msg(&packet, 0, &msg);
 
         if (pr <= 0) {
+            if (pr == DECODE_FAIL_MIC) {
+                decoder->decode_checksum_fails++;
+            }
             last_error = pr;
             continue;
         }

@@ -135,7 +135,7 @@ static void usage(int exit_code)
             "       Specify a negative number to disable a device decoding protocol (can be used multiple times)\n"
             "  [-X <spec> | help] Add a general purpose decoder (prepend -R 0 to disable all decoders)\n"
             "  [-Y auto | classic | minmax | hybrid] FSK pulse detector mode.\n"
-            "  [-Y wh55soft[=<id>] | finesoft] Raw-IQ fallback.\n"
+            "  [-Y wh55soft[=<id>] | finesoft | honeywellsoft] IQ fallback.\n"
             "  [-Y level=<dB level>] Manual detection level used to determine pulses (-1.0 to -30.0) (0=auto).\n"
             "  [-Y minlevel=<dB level>] Manual minimum detection level used to determine pulses (-1.0 to -99.0).\n"
             "  [-Y minsnr=<dB level>] Minimum SNR to determine pulses (1.0 to 99.0).\n"
@@ -157,7 +157,7 @@ static void usage(int exit_code)
             "  [-F log | kv | json | csv | mqtt | influx | syslog | trigger | rtl_tcp | http | null | help] Produce decoded output in given format.\n"
             "       Append output to file with :<filename> (e.g. -F csv:log.csv), defaults to stdout.\n"
             "       Specify host/port for syslog with e.g. -F syslog:127.0.0.1:1514\n"
-            "  [-M time[:<options>] | protocol | level | noise[:<secs>] | stats | bits | help] Add various meta data to each output.\n"
+            "  [-M time[:<options>] | protocol | level | noise[:<secs>] | stats | statslog | bits | help] Metadata.\n"
             "  [-K FILE | PATH | <tag> | <key>=<tag>] Add an expanded token or fixed tag to every output line.\n"
             "  [-C native | si | customary] Convert units in decoded output.\n"
             "  [-n <value>] Specify number of samples to take (each sample is an I/Q pair)\n"
@@ -320,7 +320,7 @@ static void help_meta(void)
 {
     term_help_fprintf(stdout,
             "\t\t= Meta information option =\n"
-            "  [-M time[:<options>]|protocol|level|noise[:<secs>]|stats|bits] Add various metadata to every output line.\n"
+            "  [-M time[:<options>]|protocol|level|noise[:<secs>]|stats|statslog|bits] Add metadata or diagnostics.\n"
             "\tUse \"time\" to add current date and time meta data (preset for live inputs).\n"
             "\tUse \"time:rel\" to add sample position meta data (preset for read-file and stdin).\n"
             "\tUse \"time:unix\" to show the seconds since unix epoch as time meta data. This is always UTC.\n"
@@ -337,6 +337,9 @@ static void help_meta(void)
             "\tUse \"noise[:<secs>]\" to report estimated noise level at intervals (default: 10 seconds).\n"
             "\tUse \"stats[:[<level>][:<interval>]]\" to report statistics (default: 600 seconds).\n"
             "\t  level 0: no report, 1: report successful devices, 2: report active devices, 3: report all\n"
+            "\tUse \"statslog[:[<level>][:<interval>]]\" for the same report as a\n"
+            "\t  'rtl_433_stats ' prefixed JSON line on stderr (default: level 2, 60 seconds).\n"
+            "\t  This bypasses normal JSON/MQTT outputs so device-event consumers are unaffected.\n"
             "\tUse \"bits\" to add bit representation to code outputs (for debug).\n");
     exit(0);
 }
@@ -780,13 +783,20 @@ static void parse_conf_option(r_cfg_t *cfg, int opt, char *arg)
         else if (!strcasecmp(arg, "oldmodel")) {
             fprintf(stderr, "oldmodel option (-M) is deprecated.\n");
         }
-        else if (!strncasecmp(arg, "stats", 5)) {
+        else if (!strncasecmp(arg, "stats", 5) && strncasecmp(arg, "statslog", 8)) {
             // there also should be options to set whether to flush on report
             char *p = arg_param(arg);
             cfg->report_stats = atoiv(p, 1);
             cfg->stats_interval = atoiv(arg_param(p), 600); // atoi_time_default()
             time(&cfg->stats_time);
             cfg->stats_time += cfg->stats_interval;
+        }
+        else if (!strncasecmp(arg, "statslog", 8)) {
+            char *p = arg_param(arg);
+            cfg->report_stats_log = atoiv(p, 2);
+            cfg->stats_log_interval = atoiv(arg_param(p), 60);
+            time(&cfg->stats_log_time);
+            cfg->stats_log_time += cfg->stats_log_interval;
         }
         else if (!strncasecmp(arg, "replay", 6)) {
             cfg->in_replay = atobv(arg_param(arg), 1);
@@ -970,6 +980,9 @@ static void parse_conf_option(r_cfg_t *cfg, int opt, char *arg)
             else if (kwargs_match(p, "finesoft", &val)) {
                 cfg->fineoffset_soft = 1;
             }
+            else if (kwargs_match(p, "honeywellsoft", &val)) {
+                cfg->honeywell_soft = 1;
+            }
             else if (kwargs_match(p, "ampest", &val)) {
                 cfg->demod->use_mag_est = 0;
             }
@@ -1095,6 +1108,19 @@ Side effects are:
 - hop on events.
 - quit on events.
 */
+static void write_stats_log(r_cfg_t *cfg, int level, time_t now)
+{
+    data_t *data = create_report_data(cfg, level);
+    char *json = data_print_jsons_dup(data);
+
+    if (json) {
+        fprintf(stderr, "rtl_433_stats %lld %s\n", (long long)now, json);
+        fflush(stderr);
+        free(json);
+    }
+    data_free(data);
+}
+
 static void process_sdr_frame(r_cfg_t *cfg, unsigned char *iq_buf, uint32_t len)
 {
     // Clip frame length and exit if requested
@@ -1165,12 +1191,25 @@ static void process_sdr_frame(r_cfg_t *cfg, unsigned char *iq_buf, uint32_t len)
         cfg->exit_async = 1;
         print_log(LOG_CRITICAL, __func__, "Time expired, exiting!");
     }
-    // Check for interval stats printing
-    if (cfg->stats_now || (cfg->report_stats && cfg->stats_interval && rawtime >= cfg->stats_time)) {
+    // Check for interval stats printing. statslog deliberately bypasses all
+    // configured data outputs so diagnostics never enter device JSON/MQTT.
+    int output_stats_due = cfg->stats_now ||
+            (cfg->report_stats && cfg->stats_interval && rawtime >= cfg->stats_time);
+    int log_stats_due = cfg->report_stats_log && cfg->stats_log_interval &&
+            rawtime >= cfg->stats_log_time;
+    if (log_stats_due) {
+        write_stats_log(cfg, cfg->report_stats_log, rawtime);
+    }
+    if (output_stats_due) {
         event_occurred_handler(cfg, create_report_data(cfg, cfg->stats_now ? 3 : cfg->report_stats));
+    }
+    if (output_stats_due || log_stats_due) {
         flush_report_data(cfg);
-        if (rawtime >= cfg->stats_time) {
+        if (output_stats_due && rawtime >= cfg->stats_time) {
             cfg->stats_time += cfg->stats_interval;
+        }
+        if (log_stats_due) {
+            cfg->stats_log_time += cfg->stats_log_interval;
         }
         if (cfg->stats_now) {
             cfg->stats_now--;
@@ -1865,6 +1904,17 @@ int main(int argc, char **argv) {
             if (cfg->verbosity >= LOG_NOTICE) {
                 print_logf(LOG_NOTICE, "Input", "Test mode file issued %d packets", n_blocks);
             }
+            time_t file_stats_time;
+            time(&file_stats_time);
+            if (cfg->report_stats_log > 0) {
+                write_stats_log(cfg, cfg->report_stats_log, file_stats_time);
+            }
+            if (cfg->report_stats > 0) {
+                event_occurred_handler(cfg, create_report_data(cfg, cfg->report_stats));
+            }
+            if (cfg->report_stats_log > 0 || cfg->report_stats > 0) {
+                flush_report_data(cfg);
+            }
             reset_sdr_flow(cfg);
 
             if (in_file != stdin) {
@@ -1937,8 +1987,15 @@ int main(int argc, char **argv) {
     sdr_stop(cfg->dev);
     //print_log(LOG_INFO, "rtl_433", "stopped.");
 
+    time_t final_stats_time;
+    time(&final_stats_time);
+    if (cfg->report_stats_log > 0) {
+        write_stats_log(cfg, cfg->report_stats_log, final_stats_time);
+    }
     if (cfg->report_stats > 0) {
         event_occurred_handler(cfg, create_report_data(cfg, cfg->report_stats));
+    }
+    if (cfg->report_stats_log > 0 || cfg->report_stats > 0) {
         flush_report_data(cfg);
     }
 

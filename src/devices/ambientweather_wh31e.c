@@ -208,6 +208,7 @@ Some payloads:
 static int ambientweather_whx_decode(r_device *decoder, bitbuffer_t *bitbuffer)
 {
     int events = 0;
+    int last_error = 0;
     uint8_t b[18]; // actually only 6/9/17.5 bytes, no indication what the last 5 might be
     int row;
     int msg_type;
@@ -232,12 +233,16 @@ static int ambientweather_whx_decode(r_device *decoder, bitbuffer_t *bitbuffer)
             uint8_t c_crc = crc8(b, 6, 0x31, 0x00);
             if (c_crc) {
                 decoder_logf(decoder, 1, __func__, "WH31E/WH31B (%d) bad CRC", msg_type);
-                continue; // DECODE_FAIL_MIC
+                decoder->decode_crc_fails++;
+                last_error = DECODE_FAIL_MIC;
+                continue;
             }
             uint8_t c_sum = add_bytes(b, 6) - b[6];
             if (c_sum) {
                 decoder_logf(decoder, 1, __func__, "WH31E/WH31B (%d) bad SUM", msg_type);
-                continue; // DECODE_FAIL_MIC
+                decoder->decode_checksum_fails++;
+                last_error = DECODE_FAIL_MIC;
+                continue;
             }
 
             int id       = b[1];
@@ -271,12 +276,16 @@ static int ambientweather_whx_decode(r_device *decoder, bitbuffer_t *bitbuffer)
             uint8_t c_crc = crc8(b, 10, 0x31, 0x00);
             if (c_crc) {
                 decoder_log(decoder, 1, __func__, "WH31E RCC bad CRC");
-                continue; // DECODE_FAIL_MIC
+                decoder->decode_crc_fails++;
+                last_error = DECODE_FAIL_MIC;
+                continue;
             }
             uint8_t c_sum = add_bytes(b, 10) - b[10];
             if (c_sum) {
                 decoder_log(decoder, 1, __func__, "WH31E RCC bad SUM");
-                continue; // DECODE_FAIL_MIC
+                decoder->decode_checksum_fails++;
+                last_error = DECODE_FAIL_MIC;
+                continue;
             }
 
             int id      = b[1];
@@ -310,12 +319,16 @@ static int ambientweather_whx_decode(r_device *decoder, bitbuffer_t *bitbuffer)
             uint8_t c_crc = crc8(b, 8, 0x31, 0x00);
             if (c_crc) {
                 decoder_log(decoder, 1, __func__, "WH40 bad CRC");
-                continue; // DECODE_FAIL_MIC
+                decoder->decode_crc_fails++;
+                last_error = DECODE_FAIL_MIC;
+                continue;
             }
             uint8_t c_sum = add_bytes(b, 8) - b[8];
             if (c_sum) {
                 decoder_log(decoder, 1, __func__, "WH40 bad SUM");
-                continue; // DECODE_FAIL_MIC
+                decoder->decode_checksum_fails++;
+                last_error = DECODE_FAIL_MIC;
+                continue;
             }
 
             int id         = ((b[1] & 0x0f) << 16) | (b[2] << 8) | b[3];
@@ -350,12 +363,16 @@ static int ambientweather_whx_decode(r_device *decoder, bitbuffer_t *bitbuffer)
             uint8_t c_crc = crc8(b, 9, 0x31, 0x00);
             if (c_crc) {
                 decoder_log(decoder, 1, __func__, "WN20 bad CRC");
-                continue; // DECODE_FAIL_MIC
+                decoder->decode_crc_fails++;
+                last_error = DECODE_FAIL_MIC;
+                continue;
             }
             uint8_t c_sum = add_bytes(b, 9) - b[9];
             if (c_sum) {
                 decoder_log(decoder, 1, __func__, "WN20 bad SUM");
-                continue; // DECODE_FAIL_MIC
+                decoder->decode_checksum_fails++;
+                last_error = DECODE_FAIL_MIC;
+                continue;
             }
 
             int id          = (b[2] << 8) | b[3];
@@ -394,12 +411,16 @@ static int ambientweather_whx_decode(r_device *decoder, bitbuffer_t *bitbuffer)
             uint8_t c_crc = crc8(b, 15, 0x31, 0x00);
             if (c_crc) {
                 decoder_log(decoder, 1, __func__, "WS68 bad CRC");
-                continue; // DECODE_FAIL_MIC
+                decoder->decode_crc_fails++;
+                last_error = DECODE_FAIL_MIC;
+                continue;
             }
             uint8_t c_sum = add_bytes(b, 15) - b[15];
             if (c_sum) {
                 decoder_log(decoder, 1, __func__, "WS68 bad SUM");
-                continue; // DECODE_FAIL_MIC
+                decoder->decode_checksum_fails++;
+                last_error = DECODE_FAIL_MIC;
+                continue;
             }
 
             int id      = (b[2] << 8) | b[3];
@@ -437,7 +458,7 @@ static int ambientweather_whx_decode(r_device *decoder, bitbuffer_t *bitbuffer)
             decoder_logf(decoder, 1, __func__, "unknown message type %02x (expected 0x20/0x30/0x40/0x68)", msg_type);
         }
     }
-    return events;
+    return events ? events : last_error;
 }
 
 static char const *const output_fields[] = {

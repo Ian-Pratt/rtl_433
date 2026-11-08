@@ -15,6 +15,10 @@ add_executable(fineoffset-soft-scan fineoffset-soft-scan.c ../src/soft_fsk.c)
 
 target_link_libraries(fineoffset-soft-scan m)
 
+add_executable(honeywell-soft-scan honeywell-soft-scan.c ../src/soft_fsk.c)
+
+target_link_libraries(honeywell-soft-scan m)
+
 add_executable(string-expand-test string-expand-test.c ../src/string_expand.c ../src/logger.c ../src/compat_time.c)
 
 target_link_libraries(string-expand-test data)
@@ -94,6 +98,11 @@ if(UNIX)
                 NAME http_server_stats_truncation
                 COMMAND ${BASH_PROGRAM}
                     ${CMAKE_CURRENT_SOURCE_DIR}/http-stats-truncation-test.sh
+                    $<TARGET_FILE:rtl_433>)
+            add_test(
+                NAME statslog_output_isolation
+                COMMAND ${BASH_PROGRAM}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/statslog-output-test.sh
                     $<TARGET_FILE:rtl_433>)
         else()
             message(STATUS "Skipping http_server_rtltcp test (need python3)")

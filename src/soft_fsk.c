@@ -216,9 +216,10 @@ static void score_candidate(float const *llr, size_t start, unsigned symbol_samp
     }
 }
 
-int soft_fsk_scan_cu8_multi(uint8_t const *iq, size_t sample_count, unsigned sample_rate,
+static int soft_fsk_scan_cu8_multi_impl(uint8_t const *iq, size_t sample_count, unsigned sample_rate,
         float tone0_hz, float tone1_hz, unsigned symbol_samples,
         uint8_t const *preamble, unsigned preamble_bits, unsigned output_bits,
+        unsigned frame_offset, unsigned frame_bits,
         soft_fsk_result_t *results, unsigned max_results)
 {
     float *llr;
@@ -335,19 +336,85 @@ int soft_fsk_scan_cu8_multi(uint8_t const *iq, size_t sample_count, unsigned sam
     }
     for (unsigned i = 0; i < result_count; ++i) {
         size_t packet_start = results[i].start;
+        float symbol_period = symbol_samples;
         float score_sq = results[i].score;
+        if (frame_bits >= 2 && frame_offset + frame_bits <= output_bits) {
+            float best_framing = -INFINITY;
+            size_t best_start = packet_start;
+            float best_period = symbol_period;
+            unsigned frames = (output_bits - frame_offset) / frame_bits;
+            if (frames > 32) {
+                frames = 32;
+            }
+            for (int period_step = -8; period_step <= 8; ++period_step) {
+                float period = symbol_samples + period_step * 0.01f;
+                for (int phase = -2; phase <= 2; ++phase) {
+                    if (phase < 0 && packet_start < (size_t)-phase) {
+                        continue;
+                    }
+                    size_t trial_start = (size_t)((int64_t)packet_start + phase);
+                    float framing = 0.0f;
+                    unsigned used = 0;
+                    for (unsigned frame = 0; frame < frames; ++frame) {
+                        size_t start_bit = (size_t)lroundf(trial_start +
+                                (frame_offset + frame * frame_bits) * period);
+                        size_t stop_bit = (size_t)lroundf(trial_start +
+                                (frame_offset + frame * frame_bits + frame_bits - 1) * period);
+                        if (stop_bit >= valid) {
+                            break;
+                        }
+                        framing += -llr[start_bit] + llr[stop_bit];
+                        used += 2;
+                    }
+                    if (used && framing / used > best_framing) {
+                        best_framing = framing / used;
+                        best_start = trial_start;
+                        best_period = period;
+                    }
+                }
+            }
+            packet_start = best_start;
+            symbol_period = best_period;
+        }
         memset(results[i].bytes, 0, sizeof(results[i].bytes));
         results[i].score = sqrtf(score_sq);
+        results[i].start = packet_start;
+        results[i].symbol_period = symbol_period;
         results[i].symbol_samples = symbol_samples;
         results[i].bit_count = output_bits;
         for (unsigned bit = 0; bit < output_bits; ++bit) {
-            if (llr[packet_start + (size_t)bit * symbol_samples] > 0.0f) {
+            size_t sample = (size_t)lroundf(packet_start + bit * symbol_period);
+            if (sample >= valid) {
+                break;
+            }
+            if (llr[sample] > 0.0f) {
                 results[i].bytes[bit / 8] |= 1 << (7 - bit % 8);
             }
         }
     }
     free(llr);
     return result_count;
+}
+
+int soft_fsk_scan_cu8_multi(uint8_t const *iq, size_t sample_count, unsigned sample_rate,
+        float tone0_hz, float tone1_hz, unsigned symbol_samples,
+        uint8_t const *preamble, unsigned preamble_bits, unsigned output_bits,
+        soft_fsk_result_t *results, unsigned max_results)
+{
+    return soft_fsk_scan_cu8_multi_impl(iq, sample_count, sample_rate,
+            tone0_hz, tone1_hz, symbol_samples, preamble, preamble_bits, output_bits,
+            0, 0, results, max_results);
+}
+
+int soft_fsk_scan_cu8_multi_framed(uint8_t const *iq, size_t sample_count,
+        unsigned sample_rate, float tone0_hz, float tone1_hz, unsigned symbol_samples,
+        uint8_t const *preamble, unsigned preamble_bits, unsigned output_bits,
+        unsigned frame_offset, unsigned frame_bits,
+        soft_fsk_result_t *results, unsigned max_results)
+{
+    return soft_fsk_scan_cu8_multi_impl(iq, sample_count, sample_rate,
+            tone0_hz, tone1_hz, symbol_samples, preamble, preamble_bits, output_bits,
+            frame_offset, frame_bits, results, max_results);
 }
 
 int soft_fsk_scan_cu8(uint8_t const *iq, size_t sample_count, unsigned sample_rate,

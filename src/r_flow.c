@@ -39,19 +39,11 @@
 #define FINEOFFSET_SOFT_TONE1_HZ 868375000.0f
 #define FINEOFFSET_SOFT_SCORE_MIN 0.90f
 #define FINEOFFSET_SOFT_MAX_CANDIDATES 8
-
-static uint8_t wh55_crc8(uint8_t const *message, unsigned length)
-{
-    uint8_t remainder = 0;
-
-    for (unsigned byte = 0; byte < length; ++byte) {
-        remainder ^= message[byte];
-        for (unsigned bit = 0; bit < 8; ++bit) {
-            remainder = remainder & 0x80 ? (remainder << 1) ^ 0x31 : remainder << 1;
-        }
-    }
-    return remainder;
-}
+#define HONEYWELL_SOFT_TONE0_HZ 868199000.0f
+#define HONEYWELL_SOFT_TONE1_HZ 868338000.0f
+#define HONEYWELL_SOFT_SCORE_MIN 0.70f
+#define HONEYWELL_SOFT_MAX_CANDIDATES 8
+#define HONEYWELL_SOFT_OUTPUT_BITS 1536
 
 static r_device *find_device(struct dm_state *demod, char const *name)
 {
@@ -98,9 +90,9 @@ static float cu8_noise_floor(uint8_t const *iq, size_t sample_count,
 }
 
 static int run_fineoffset_soft(r_cfg_t *cfg, r_device *wh55_device,
-        r_device *wn34_device, r_device *wh31_device, uint8_t const *iq,
+        r_device *wn34_device, r_device *wh31_device, r_device *wh51_device, uint8_t const *iq,
         size_t sample_count, int normal_wh55_decoded, int normal_wn34_decoded,
-        int normal_wh31_decoded)
+        int normal_wh31_decoded, int normal_wh51_decoded)
 {
     static uint8_t const wh55_preamble[] = {0xaa, 0xaa, 0xaa, 0x2d, 0xd4, 0x55};
     static uint8_t const fineoffset_preamble[] = {0xaa, 0xaa, 0x2d, 0xd4};
@@ -120,7 +112,7 @@ static int run_fineoffset_soft(r_cfg_t *cfg, r_device *wh55_device,
     int events = 0;
 
     if ((!cfg->wh55_soft_id && !cfg->fineoffset_soft) ||
-            (!wh55_device && !wn34_device && !wh31_device) ||
+            (!wh55_device && !wn34_device && !wh31_device && !wh51_device) ||
             demod->sample_size != 2 || !sample_count ||
             demod->samp_rate < 800000 || demod->samp_rate > 1200000) {
         return 0;
@@ -151,6 +143,7 @@ static int run_fineoffset_soft(r_cfg_t *cfg, r_device *wh55_device,
     memcpy(combined, stream->overlap, old_overlap * 2);
     memcpy(combined + old_overlap * 2, iq, sample_count * 2);
 
+    stream->stats.scan_calls++;
     int found = soft_fsk_scan_cu8_multi(combined, combined_samples, demod->samp_rate,
             tone0, tone1, symbol_samples, preamble, preamble_bits, output_bits,
             results, FINEOFFSET_SOFT_MAX_CANDIDATES);
@@ -164,14 +157,15 @@ static int run_fineoffset_soft(r_cfg_t *cfg, r_device *wh55_device,
         free(combined);
         return 0;
     }
+    stream->stats.candidates += found;
 
     pulse_data_t saved_fsk = demod->fsk_pulse_data;
     unsigned saved_start_ago = demod->pulse_data.start_ago;
     uint64_t combined_pos = demod->input_pos - old_overlap;
-    int normal_decoded[3] = {
-        normal_wh55_decoded, normal_wn34_decoded, normal_wh31_decoded,
+    int normal_decoded[4] = {
+        normal_wh55_decoded, normal_wn34_decoded, normal_wh31_decoded, normal_wh51_decoded,
     };
-    for (unsigned i = 0; i < 3; ++i) {
+    for (unsigned i = 0; i < 4; ++i) {
         if (normal_decoded[i]) {
             stream->normal_block_begin[i] = combined_pos;
             stream->normal_block_end[i] = demod->input_pos + sample_count;
@@ -182,13 +176,16 @@ static int run_fineoffset_soft(r_cfg_t *cfg, r_device *wh55_device,
         uint8_t family = result->bytes[family_index];
         r_device *device = NULL;
         unsigned device_index = 0;
+        if (result->score < FINEOFFSET_SOFT_SCORE_MIN) {
+            stream->stats.below_score++;
+            continue;
+        }
         if (family == 0x55 && wh55_device) {
             unsigned sensor_id = (result->bytes[family_index + 2] << 8) |
                     result->bytes[family_index + 3];
-            if (wh55_crc8(&result->bytes[family_index], 8) !=
-                            result->bytes[family_index + 8] ||
-                    (cfg->wh55_soft_id && cfg->wh55_soft_id != UINT32_MAX &&
-                            sensor_id != cfg->wh55_soft_id)) {
+            if (cfg->wh55_soft_id && cfg->wh55_soft_id != UINT32_MAX &&
+                            sensor_id != cfg->wh55_soft_id) {
+                stream->stats.filtered++;
                 continue;
             }
             device = wh55_device;
@@ -202,13 +199,23 @@ static int run_fineoffset_soft(r_cfg_t *cfg, r_device *wh55_device,
             device = wh31_device;
             device_index = 2;
         }
-        if (result->score < FINEOFFSET_SOFT_SCORE_MIN || !device || normal_decoded[device_index]) {
+        else if (family == 0x51 && wh51_device) {
+            device = wh51_device;
+            device_index = 3;
+        }
+        if (!device) {
+            stream->stats.unknown_family++;
+            continue;
+        }
+        if (normal_decoded[device_index]) {
+            stream->stats.normal_suppressed++;
             continue;
         }
 
         size_t packet_samples = result->bit_count * result->symbol_samples;
         size_t settle_samples = (size_t)lroundf(demod->samp_rate * 3.0e-3f);
         if (result->start + packet_samples + settle_samples > combined_samples) {
+            stream->stats.incomplete++;
             continue;
         }
 
@@ -216,10 +223,13 @@ static int run_fineoffset_soft(r_cfg_t *cfg, r_device *wh55_device,
         if (stream->normal_block_end[device_index] &&
                 packet_pos >= stream->normal_block_begin[device_index] &&
                 packet_pos <= stream->normal_block_end[device_index]) {
+            stream->stats.normal_suppressed++;
             continue;
         }
+
         if (stream->last_packet_start_plus_one &&
                 packet_pos <= stream->last_packet_start_plus_one - 1 + symbol_samples) {
+            stream->stats.duplicate_suppressed++;
             continue;
         }
         bitbuffer_t bits = {0};
@@ -244,16 +254,147 @@ static int run_fineoffset_soft(r_cfg_t *cfg, r_device *wh55_device,
         demod->pulse_data.start_ago = packet_pos < demod->input_pos + sample_count ?
                 demod->input_pos + sample_count - packet_pos : 0;
 
+        stream->stats.decode_attempts++;
         int ret = device->decode_fn(device, &bits);
         device->decode_events += 1;
         if (ret > 0) {
             stream->last_packet_start_plus_one = packet_pos + 1;
             device->decode_ok += 1;
             device->decode_messages += ret;
+            stream->stats.decode_ok += ret;
             events += ret;
         }
         else if (ret >= DECODE_FAIL_SANITY) {
             device->decode_fails[-ret] += 1;
+            if (ret == DECODE_FAIL_MIC) {
+                stream->stats.fail_mic++;
+            }
+            else {
+                stream->stats.fail_other++;
+            }
+        }
+    }
+
+    demod->pulse_data.start_ago = saved_start_ago;
+    demod->fsk_pulse_data = saved_fsk;
+    free(combined);
+    return events;
+}
+
+static int run_honeywell_soft(r_cfg_t *cfg, r_device *device, uint8_t const *iq,
+        size_t sample_count, int normal_decoded)
+{
+    static uint8_t const preamble[] = {0x55, 0xff, 0x00, 0x40};
+    struct dm_state *demod = cfg->demod;
+    soft_fsk_stream_t *stream = &demod->honeywell_soft;
+    soft_fsk_result_t results[HONEYWELL_SOFT_MAX_CANDIDATES];
+    size_t old_overlap = stream->overlap_samples;
+    size_t combined_samples = old_overlap + sample_count;
+    uint8_t *combined;
+    float tone0;
+    float tone1;
+    unsigned symbol_samples;
+    int events = 0;
+
+    if (!cfg->honeywell_soft || !device || demod->sample_size != 2 || !sample_count ||
+            demod->samp_rate < 800000 || demod->samp_rate > 1200000) {
+        return 0;
+    }
+
+    tone0 = HONEYWELL_SOFT_TONE0_HZ - demod->center_frequency;
+    tone1 = HONEYWELL_SOFT_TONE1_HZ - demod->center_frequency;
+    if (fabsf(tone0) >= demod->samp_rate / 2.0f || fabsf(tone1) >= demod->samp_rate / 2.0f) {
+        return 0;
+    }
+    symbol_samples = (unsigned)lroundf(demod->samp_rate * 26.0e-6f);
+    combined = malloc(combined_samples * 2);
+    if (!combined) {
+        return 0;
+    }
+    memcpy(combined, stream->overlap, old_overlap * 2);
+    memcpy(combined + old_overlap * 2, iq, sample_count * 2);
+
+    stream->stats.scan_calls++;
+    int found = soft_fsk_scan_cu8_multi_framed(combined, combined_samples, demod->samp_rate,
+            tone0, tone1, symbol_samples, preamble, 26, HONEYWELL_SOFT_OUTPUT_BITS,
+            26, 10,
+            results, HONEYWELL_SOFT_MAX_CANDIDATES);
+
+    size_t keep = combined_samples < SOFT_FSK_STREAM_OVERLAP_SAMPLES ?
+            combined_samples : SOFT_FSK_STREAM_OVERLAP_SAMPLES;
+    memcpy(stream->overlap, combined + (combined_samples - keep) * 2, keep * 2);
+    stream->overlap_samples = keep;
+
+    if (found <= 0) {
+        free(combined);
+        return 0;
+    }
+    stream->stats.candidates += found;
+
+    pulse_data_t saved_fsk = demod->fsk_pulse_data;
+    unsigned saved_start_ago = demod->pulse_data.start_ago;
+    uint64_t combined_pos = demod->input_pos - old_overlap;
+    for (int candidate = 0; candidate < found; ++candidate) {
+        soft_fsk_result_t *result = &results[candidate];
+        if (result->score < HONEYWELL_SOFT_SCORE_MIN) {
+            stream->stats.below_score++;
+            continue;
+        }
+        if (normal_decoded) {
+            stream->stats.normal_suppressed++;
+            continue;
+        }
+
+        size_t packet_samples = (size_t)lroundf(result->bit_count * result->symbol_period);
+        if (result->start + packet_samples > combined_samples) {
+            stream->stats.incomplete++;
+            continue;
+        }
+        uint64_t packet_pos = combined_pos + result->start;
+        if (stream->last_packet_start_plus_one &&
+                packet_pos <= stream->last_packet_start_plus_one - 1 + symbol_samples) {
+            stream->stats.duplicate_suppressed++;
+            continue;
+        }
+
+        bitbuffer_t bits = {0};
+        for (unsigned bit = 0; bit < result->bit_count; ++bit) {
+            bitbuffer_add_bit(&bits, result->bytes[bit / 8] >> (7 - bit % 8) & 1);
+        }
+
+        size_t packet_end = result->start + packet_samples;
+        float signal_power = cu8_mean_power(combined, result->start, packet_end);
+        float noise_power = cu8_noise_floor(combined, combined_samples, result->start, packet_end);
+        memset(&demod->fsk_pulse_data, 0, sizeof(demod->fsk_pulse_data));
+        demod->fsk_pulse_data.fsk_f1_est = 1;
+        demod->fsk_pulse_data.fsk_f2_est = 1;
+        demod->fsk_pulse_data.freq1_hz = HONEYWELL_SOFT_TONE0_HZ;
+        demod->fsk_pulse_data.freq2_hz = HONEYWELL_SOFT_TONE1_HZ;
+        demod->fsk_pulse_data.centerfreq_hz = demod->center_frequency;
+        demod->fsk_pulse_data.rssi_db = 10.0f * log10f(signal_power) - 42.1442f;
+        demod->fsk_pulse_data.noise_db = 10.0f * log10f(noise_power) - 42.1442f;
+        demod->fsk_pulse_data.snr_db = 10.0f * log10f(signal_power / noise_power);
+        demod->pulse_data.start_ago = packet_pos < demod->input_pos + sample_count ?
+                demod->input_pos + sample_count - packet_pos : 0;
+
+        stream->stats.decode_attempts++;
+        int ret = device->decode_fn(device, &bits);
+        device->decode_events += 1;
+        if (ret > 0) {
+            stream->last_packet_start_plus_one = packet_pos + 1;
+            device->decode_ok += 1;
+            device->decode_messages += ret;
+            stream->stats.decode_ok += ret;
+            events += ret;
+        }
+        else if (ret >= DECODE_FAIL_SANITY) {
+            device->decode_fails[-ret] += 1;
+            if (ret == DECODE_FAIL_MIC) {
+                stream->stats.fail_mic++;
+            }
+            else {
+                stream->stats.fail_other++;
+            }
         }
     }
 
@@ -321,6 +462,7 @@ void reset_sdr_flow(r_cfg_t *cfg)
     demod->min_level_auto = 0.0f;
     demod->noise_level    = 0.0f;
     memset(&demod->fineoffset_soft, 0, sizeof(demod->fineoffset_soft));
+    memset(&demod->honeywell_soft, 0, sizeof(demod->honeywell_soft));
 
     baseband_low_pass_filter_reset(&demod->lowpass_filter_state);
     baseband_demod_FM_reset(&demod->demod_FM_state);
@@ -345,16 +487,22 @@ int push_sdr_flow(r_cfg_t *cfg, unsigned char *iq_buf, uint32_t len)
     }
 
     unsigned long n_samples = len / demod->sample_size;
-    int soft_enabled = cfg->wh55_soft_id || cfg->fineoffset_soft;
+    int soft_enabled = cfg->wh55_soft_id || cfg->fineoffset_soft || cfg->honeywell_soft;
     r_device *wh55_device = soft_enabled ? find_device(demod,
             "Fine Offset / Ecowitt WH55 water leak sensor") : NULL;
     r_device *wn34_device = cfg->fineoffset_soft ? find_device(demod,
             "Fine Offset Electronics WN34S/L/D, WN38 and Froggit DP150/D35 temperature sensor") : NULL;
     r_device *wh31_device = cfg->fineoffset_soft ? find_device(demod,
             "Ambient Weather WH31E Thermo-Hygrometer Sensor, EcoWitt WH40/WN20 rain gauge, WS68 weather station") : NULL;
+    r_device *wh51_device = cfg->fineoffset_soft ? find_device(demod,
+            "Fine Offset Electronics/Ecowitt WH51, WN31, SwitchDoc Labs SM23 Soil Moisture Sensor") : NULL;
+    r_device *honeywell_device = cfg->honeywell_soft ? find_device(demod,
+            "Honeywell CM921 Wireless Programmable Room Thermostat") : NULL;
     unsigned wh55_decode_ok_before = wh55_device ? wh55_device->decode_ok : 0;
     unsigned wn34_decode_ok_before = wn34_device ? wn34_device->decode_ok : 0;
     unsigned wh31_decode_ok_before = wh31_device ? wh31_device->decode_ok : 0;
+    unsigned wh51_decode_ok_before = wh51_device ? wh51_device->decode_ok : 0;
+    unsigned honeywell_decode_ok_before = honeywell_device ? honeywell_device->decode_ok : 0;
     if (n_samples * demod->sample_size != len) {
         print_log(LOG_WARNING, __func__, "Sample buffer length not aligned to sample size!");
     }
@@ -738,12 +886,17 @@ int push_sdr_flow(r_cfg_t *cfg, unsigned char *iq_buf, uint32_t len)
         }
     }
 
-    if (len && (wh55_device || wn34_device || wh31_device)) {
-        d_events += run_fineoffset_soft(cfg, wh55_device, wn34_device, wh31_device,
+    if (len && (wh55_device || wn34_device || wh31_device || wh51_device)) {
+        d_events += run_fineoffset_soft(cfg, wh55_device, wn34_device, wh31_device, wh51_device,
                 iq_buf, n_samples,
                 wh55_device && wh55_device->decode_ok > wh55_decode_ok_before,
                 wn34_device && wn34_device->decode_ok > wn34_decode_ok_before,
-                wh31_device && wh31_device->decode_ok > wh31_decode_ok_before);
+                wh31_device && wh31_device->decode_ok > wh31_decode_ok_before,
+                wh51_device && wh51_device->decode_ok > wh51_decode_ok_before);
+    }
+    if (len && honeywell_device) {
+        d_events += run_honeywell_soft(cfg, honeywell_device, iq_buf, n_samples,
+                honeywell_device->decode_ok > honeywell_decode_ok_before);
     }
 
     demod->input_pos += n_samples;

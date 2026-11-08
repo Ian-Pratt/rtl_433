@@ -74,6 +74,7 @@ struct dm_state {
 
     /* Optional protocol-specific weak-signal scanner state. */
     soft_fsk_stream_t fineoffset_soft;
+    soft_fsk_stream_t honeywell_soft;
 
     /* global stats */
     time_t running_since;          ///< program start time statistic

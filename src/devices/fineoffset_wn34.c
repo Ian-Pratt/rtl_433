@@ -70,6 +70,8 @@ static int fineoffset_wn34_decode(r_device *decoder, bitbuffer_t *bitbuffer)
 
     if (crc != b[7] || chk != b[8]) {
         decoder_logf(decoder, 2, __func__, "Checksum error: %02x %02x", crc, chk);
+        decoder->decode_crc_fails += crc != b[7];
+        decoder->decode_checksum_fails += chk != b[8];
         return DECODE_FAIL_MIC;
     }
 

@@ -839,13 +839,34 @@ void data_acquired_handler(r_device *r_dev, data_t *data)
     data_free(data);
 }
 
+static data_t *soft_fsk_report(char const *profile, soft_fsk_stats_t const *stats)
+{
+    return data_make(
+            "profile",              "", DATA_STRING, profile,
+            "scans",                "", DATA_INT, stats->scan_calls,
+            "candidates",           "", DATA_INT, stats->candidates,
+            "below_score",          "", DATA_INT, stats->below_score,
+            "unknown_family",       "", DATA_INT, stats->unknown_family,
+            "filtered",             "", DATA_INT, stats->filtered,
+            "incomplete",           "", DATA_INT, stats->incomplete,
+            "normal_suppressed",    "", DATA_INT, stats->normal_suppressed,
+            "duplicate_suppressed", "", DATA_INT, stats->duplicate_suppressed,
+            "decode_attempts",      "", DATA_INT, stats->decode_attempts,
+            "ok",                   "", DATA_INT, stats->decode_ok,
+            "fail_mic",             "", DATA_INT, stats->fail_mic,
+            "fail_other",           "", DATA_INT, stats->fail_other,
+            NULL);
+}
+
 // level 0: do not report (don't call this), 1: report successful devices, 2: report active devices, 3: report all
 data_t *create_report_data(r_cfg_t *cfg, int level)
 {
     list_t *r_devs = &cfg->demod->r_devs;
     data_t *data;
     list_t dev_data_list = {0};
+    list_t soft_data_list = {0};
     list_ensure_size(&dev_data_list, r_devs->len);
+    list_ensure_size(&soft_data_list, 2);
 
     for (void **iter = r_devs->elems; iter && *iter; ++iter) {
         r_device *r_dev = *iter;
@@ -874,6 +895,10 @@ data_t *create_report_data(r_cfg_t *cfg, int level)
             data = data_int(data, "fail_mic",     "", NULL, r_dev->decode_fails[-DECODE_FAIL_MIC]);
         if (r_dev->decode_fails[-DECODE_FAIL_SANITY])
             data = data_int(data, "fail_sanity",  "", NULL, r_dev->decode_fails[-DECODE_FAIL_SANITY]);
+        if (r_dev->decode_crc_fails)
+            data = data_int(data, "fail_crc",      "", NULL, r_dev->decode_crc_fails);
+        if (r_dev->decode_checksum_fails)
+            data = data_int(data, "fail_checksum", "", NULL, r_dev->decode_checksum_fails);
 
         list_push(&dev_data_list, data);
     }
@@ -884,6 +909,13 @@ data_t *create_report_data(r_cfg_t *cfg, int level)
             "events",           "", DATA_INT, cfg->demod->frames_events,
             NULL);
 
+    if (cfg->wh55_soft_id || cfg->fineoffset_soft) {
+        list_push(&soft_data_list, soft_fsk_report("fineoffset", &cfg->demod->fineoffset_soft.stats));
+    }
+    if (cfg->honeywell_soft) {
+        list_push(&soft_data_list, soft_fsk_report("honeywell", &cfg->demod->honeywell_soft.stats));
+    }
+
     char since_str[LOCAL_TIME_BUFLEN];
     format_time_str(since_str, "%Y-%m-%dT%H:%M:%S", cfg->report_time_tz, cfg->demod->frames_since);
 
@@ -892,9 +924,11 @@ data_t *create_report_data(r_cfg_t *cfg, int level)
             "since",            "", DATA_STRING, since_str,
             "frames",           "", DATA_DATA, data,
             "stats",            "", DATA_ARRAY, data_array((int)dev_data_list.len, DATA_DATA, dev_data_list.elems),
+            "soft_fsk",         "", DATA_ARRAY, data_array((int)soft_data_list.len, DATA_DATA, soft_data_list.elems),
             NULL);
 
     list_free_elems(&dev_data_list, NULL);
+    list_free_elems(&soft_data_list, NULL);
     return data;
 }
 
@@ -906,6 +940,8 @@ void flush_report_data(r_cfg_t *cfg)
     cfg->demod->frames_ook = 0;
     cfg->demod->frames_fsk = 0;
     cfg->demod->frames_events = 0;
+    memset(&cfg->demod->fineoffset_soft.stats, 0, sizeof(cfg->demod->fineoffset_soft.stats));
+    memset(&cfg->demod->honeywell_soft.stats, 0, sizeof(cfg->demod->honeywell_soft.stats));
 
     for (void **iter = r_devs->elems; iter && *iter; ++iter) {
         r_device *r_dev = *iter;
@@ -918,6 +954,8 @@ void flush_report_data(r_cfg_t *cfg)
         r_dev->decode_fails[2] = 0;
         r_dev->decode_fails[3] = 0;
         r_dev->decode_fails[4] = 0;
+        r_dev->decode_crc_fails = 0;
+        r_dev->decode_checksum_fails = 0;
     }
 }
 

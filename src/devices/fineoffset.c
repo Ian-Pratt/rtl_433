@@ -759,15 +759,19 @@ static int fineoffset_WH51_callback(r_device *decoder, bitbuffer_t *bitbuffer)
         return DECODE_ABORT_EARLY;
     }
 
-    // Verify checksum
-    if ((add_bytes(b, 13) & 0xff) != b[13]) {
+    // Verify both integrity bytes before returning so diagnostics distinguish
+    // which checks rejected a candidate (often both for a damaged packet).
+    int checksum_bad = (add_bytes(b, 13) & 0xff) != b[13];
+    int crc_bad = crc8(b, 12, 0x31, 0) != b[12];
+    decoder->decode_checksum_fails += checksum_bad;
+    decoder->decode_crc_fails += crc_bad;
+    if (checksum_bad) {
         decoder_log_bitrow(decoder, 1, __func__, b, sizeof (b) * 8, "Checksum error");
-        return DECODE_FAIL_MIC;
     }
-
-    // Verify crc
-    if (crc8(b, 12, 0x31, 0) != b[12]) {
+    if (crc_bad) {
         decoder_log_bitrow(decoder, 1, __func__, b, sizeof (b) * 8, "Bitsum error");
+    }
+    if (checksum_bad || crc_bad) {
         return DECODE_FAIL_MIC;
     }
 

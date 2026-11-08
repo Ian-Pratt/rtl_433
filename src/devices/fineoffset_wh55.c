@@ -61,7 +61,8 @@ static int fineoffset_wh55_decode(r_device *decoder, bitbuffer_t *bitbuffer)
     bitbuffer_extract_bytes(bitbuffer, 0, bitpos, b, 12 * 8);
 
     if (crc8(b, 9, 0x31, 0x00)) {
-        return 0; // DECODE_FAIL_MIC;
+        decoder->decode_crc_fails++;
+        return DECODE_FAIL_MIC;
     }
 
     decoder_log_bitrow(decoder, 1, __func__, b, 12*8, "Message data");
